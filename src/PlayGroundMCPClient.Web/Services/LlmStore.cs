@@ -4,27 +4,27 @@ using PlayGroundMCPClient.Web.Models;
 
 namespace PlayGroundMCPClient.Web.Services;
 
-/// Holds the Azure OpenAI settings used by ChatOrchestrator.
-/// Initial values come from appsettings.json, but can be overridden at runtime
-/// from the UI and persisted to azure-openai.user.json (gitignored).
-public sealed class AzureOpenAIStore
+/// Holds the LLM settings used by ChatOrchestrator.
+/// Initial values come from appsettings.json (Llm section), overridable from
+/// the UI and persisted to llm.user.json (gitignored).
+public sealed class LlmStore
 {
     private readonly string _filePath;
     private readonly object _writeLock = new();
-    private AzureOpenAIOptions _current;
+    private LlmOptions _current;
 
     public event Action? Changed;
 
-    public AzureOpenAIStore(IOptions<AzureOpenAIOptions> initial, IConfiguration config, IHostEnvironment env)
+    public LlmStore(IOptions<LlmOptions> initial, IConfiguration config, IHostEnvironment env)
     {
-        _filePath = Path.Combine(env.ContentRootPath, config["AzureOpenAIUserFile"] ?? "azure-openai.user.json");
+        _filePath = Path.Combine(env.ContentRootPath, config["LlmUserFile"] ?? "llm.user.json");
         _current = Clone(initial.Value);
         LoadFromFile();
     }
 
-    public AzureOpenAIOptions Current => _current;
+    public LlmOptions Current => _current;
 
-    public void Update(AzureOpenAIOptions newValue)
+    public void Update(LlmOptions newValue)
     {
         _current = Clone(newValue);
         PersistToFile();
@@ -37,7 +37,7 @@ public sealed class AzureOpenAIStore
         try
         {
             var json = File.ReadAllText(_filePath);
-            var opts = JsonSerializer.Deserialize<AzureOpenAIOptions>(json, JsonOpts);
+            var opts = JsonSerializer.Deserialize<LlmOptions>(json, JsonOpts);
             if (opts is not null) _current = opts;
         }
         catch
@@ -55,12 +55,10 @@ public sealed class AzureOpenAIStore
         }
     }
 
-    private static AzureOpenAIOptions Clone(AzureOpenAIOptions src) => new()
+    private static LlmOptions Clone(LlmOptions src) => new()
     {
-        Endpoint = src.Endpoint,
-        Deployment = src.Deployment,
-        ApiKey = src.ApiKey,
-        ApiVersion = src.ApiVersion
+        Model = src.Model,
+        ApiKey = src.ApiKey
     };
 
     private static readonly JsonSerializerOptions JsonOpts = new()

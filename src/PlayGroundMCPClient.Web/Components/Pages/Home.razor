@@ -2,7 +2,7 @@
 @using System.Text.Json
 @inject ChatOrchestrator Orchestrator
 @inject McpServerRegistry Registry
-@inject AzureOpenAIStore AzureStore
+@inject LlmStore LlmStore
 @inject IDbContextFactory<PlaygroundDbContext> DbFactory
 @inject NavigationManager Nav
 @implements IDisposable
@@ -33,12 +33,12 @@
     </MudItem>
 
     <MudItem xs="12" md="9">
-        @if (!AzureStore.Current.IsConfigured)
+        @if (!LlmStore.Current.IsConfigured)
         {
             <MudAlert Severity="Severity.Warning" Class="mb-2"
                       ContentAlignment="HorizontalAlignment.Left">
                 <MudStack Row AlignItems="AlignItems.Center">
-                    <MudText>Azure OpenAI nao configurado.</MudText>
+                    <MudText>LLM nao configurada (Model + ApiKey).</MudText>
                     <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
                                OnClick="GoToSettings">
                         Configurar

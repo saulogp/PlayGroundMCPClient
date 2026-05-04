@@ -7,7 +7,7 @@ using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using ModelContextProtocol.Client;
 using PlayGroundMCPClient.Web.Data;
 using PlayGroundMCPClient.Web.Models;
@@ -20,7 +20,7 @@ namespace PlayGroundMCPClient.Web.Services;
 public sealed class ChatOrchestrator(
     PlaygroundDbContext db,
     McpClientPool pool,
-    AzureOpenAIStore azureStore,
+    LlmStore llmStore,
     ILoggerFactory loggerFactory,
     ILogger<ChatOrchestrator> log)
 {
@@ -30,10 +30,10 @@ public sealed class ChatOrchestrator(
         IReadOnlyList<McpServerConfig> activeServers,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var azure = azureStore.Current;
-        if (!azure.IsConfigured)
+        var llm = llmStore.Current;
+        if (!llm.IsConfigured)
         {
-            yield return new ErrorEvent("Azure OpenAI nao configurado. Va em /settings e preencha Endpoint/Deployment/ApiKey.");
+            yield return new ErrorEvent("LLM nao configurada. Va em /settings e preencha Model + ApiKey.");
             yield break;
         }
 
@@ -47,7 +47,7 @@ public sealed class ChatOrchestrator(
         {
             try
             {
-                await ProduceAsync(sessionId, userMessage, activeServers, azure, channel, ct);
+                await ProduceAsync(sessionId, userMessage, activeServers, llm, channel, ct);
             }
             catch (Exception ex)
             {
@@ -72,7 +72,7 @@ public sealed class ChatOrchestrator(
         Guid sessionId,
         string userMessage,
         IReadOnlyList<McpServerConfig> activeServers,
-        AzureOpenAIOptions azure,
+        LlmOptions llm,
         Channel<ChatStreamEvent> channel,
         CancellationToken ct)
     {
@@ -100,10 +100,9 @@ public sealed class ChatOrchestrator(
             new ToolCallObserverFilter(channel));
         builder.Services.AddSingleton(loggerFactory);
 
-        builder.AddAzureOpenAIChatCompletion(
-            deploymentName: azure.Deployment,
-            endpoint: azure.Endpoint,
-            apiKey: azure.ApiKey);
+        builder.AddOpenAIChatCompletion(
+            modelId: llm.Model,
+            apiKey: llm.ApiKey);
 
         var kernel = builder.Build();
 
@@ -148,7 +147,7 @@ public sealed class ChatOrchestrator(
             }
         }
 
-        var settings = new AzureOpenAIPromptExecutionSettings
+        var settings = new OpenAIPromptExecutionSettings
         {
             FunctionChoiceBehavior = FunctionChoiceBehavior.Auto()
         };

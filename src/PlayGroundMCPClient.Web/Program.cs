@@ -12,8 +12,8 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddMudServices();
 
-builder.Services.Configure<AzureOpenAIOptions>(
-    builder.Configuration.GetSection(AzureOpenAIOptions.SectionName));
+builder.Services.Configure<LlmOptions>(
+    builder.Configuration.GetSection(LlmOptions.SectionName));
 
 var mcpFile = builder.Configuration["McpServersFile"] ?? "mcp-servers.json";
 builder.Configuration.AddJsonFile(mcpFile, optional: true, reloadOnChange: true);
@@ -30,7 +30,7 @@ builder.Services.AddScoped(sp =>
 builder.Services.AddSingleton<ProtocolLogStore>();
 builder.Services.AddSingleton<McpServerRegistry>();
 builder.Services.AddSingleton<McpClientPool>();
-builder.Services.AddSingleton<AzureOpenAIStore>();
+builder.Services.AddSingleton<LlmStore>();
 builder.Services.AddScoped<ChatOrchestrator>();
 
 var app = builder.Build();
