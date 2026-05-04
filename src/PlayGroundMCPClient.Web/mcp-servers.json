@@ -1,0 +1,10 @@
+{
+  "Servers": [
+    {
+      "Name": "example-weather",
+      "Url": "http://localhost:5050/mcp",
+      "Headers": {},
+      "EnabledByDefault": false
+    }
+  ]
+}

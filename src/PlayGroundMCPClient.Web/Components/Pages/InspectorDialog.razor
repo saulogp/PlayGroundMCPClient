@@ -1,0 +1,91 @@
+@namespace PlayGroundMCPClient.Web.Components.Pages
+@using System.Text.Json
+@using ModelContextProtocol.Client
+@inject McpClientPool Pool
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        else
+        {
+            <MudTabs Outlined="true">
+                <MudTabPanel Text="@($"Tools ({_tools.Count})")">
+                    @foreach (var t in _tools)
+                    {
+                        <MudExpansionPanel Text="@t.Name">
+                            <MudText Typo="Typo.body2"><b>Description:</b> @t.Description</MudText>
+                            <MudText Typo="Typo.caption" Class="mt-2">Schema:</MudText>
+                            <pre style="white-space: pre-wrap; font-size: 0.8rem;">@Pretty(t.JsonSchema.ToString())</pre>
+                        </MudExpansionPanel>
+                    }
+                </MudTabPanel>
+                <MudTabPanel Text="@($"Resources ({_resources.Count})")">
+                    @foreach (var r in _resources)
+                    {
+                        <MudListItem T="string" Icon="@Icons.Material.Filled.Folder">
+                            @r.Uri - @r.Name
+                        </MudListItem>
+                    }
+                </MudTabPanel>
+                <MudTabPanel Text="@($"Prompts ({_prompts.Count})")">
+                    @foreach (var p in _prompts)
+                    {
+                        <MudListItem T="string" Icon="@Icons.Material.Filled.Article">
+                            @p.Name - @p.Description
+                        </MudListItem>
+                    }
+                </MudTabPanel>
+            </MudTabs>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close())">Fechar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public McpServerConfig Config { get; set; } = default!;
+
+    private bool _loading = true;
+    private string? _error;
+    private IList<McpClientTool> _tools = Array.Empty<McpClientTool>();
+    private IList<McpClientResource> _resources = Array.Empty<McpClientResource>();
+    private IList<McpClientPrompt> _prompts = Array.Empty<McpClientPrompt>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var client = await Pool.GetAsync(Config);
+            _tools = await client.ListToolsAsync();
+            try { _resources = await client.ListResourcesAsync(); } catch { }
+            try { _prompts = await client.ListPromptsAsync(); } catch { }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string Pretty(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch { return json; }
+    }
+}

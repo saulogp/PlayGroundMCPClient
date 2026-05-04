@@ -1,0 +1,56 @@
+@namespace PlayGroundMCPClient.Web.Components.Chat
+@inject McpServerRegistry Registry
+@implements IDisposable
+
+<MudPaper Class="pa-2 mb-2" Outlined="true">
+    <MudStack Row Spacing="1" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+        <MudText Typo="Typo.caption">MCPs ativos:</MudText>
+        @if (_servers.Count == 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Nenhum registrado. Adicione em "MCP Servers".
+            </MudText>
+        }
+        @foreach (var server in _servers)
+        {
+            var isActive = ActiveNames.Contains(server.Name);
+            <MudChip T="string"
+                     Size="Size.Small"
+                     Color="@(isActive ? Color.Primary : Color.Default)"
+                     Variant="@(isActive ? Variant.Filled : Variant.Outlined)"
+                     OnClick="@(() => Toggle(server.Name))">
+                @server.Name
+            </MudChip>
+        }
+    </MudStack>
+</MudPaper>
+
+@code {
+    [Parameter] public HashSet<string> ActiveNames { get; set; } = new();
+    [Parameter] public EventCallback<HashSet<string>> ActiveNamesChanged { get; set; }
+
+    private IReadOnlyList<McpServerConfig> _servers = Array.Empty<McpServerConfig>();
+
+    protected override void OnInitialized()
+    {
+        _servers = Registry.GetAll();
+        Registry.Changed += OnRegistryChanged;
+    }
+
+    private void OnRegistryChanged()
+    {
+        _servers = Registry.GetAll();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task Toggle(string name)
+    {
+        if (!ActiveNames.Add(name))
+        {
+            ActiveNames.Remove(name);
+        }
+        await ActiveNamesChanged.InvokeAsync(ActiveNames);
+    }
+
+    public void Dispose() => Registry.Changed -= OnRegistryChanged;
+}

@@ -1,0 +1,214 @@
+@page "/"
+@using System.Text.Json
+@inject ChatOrchestrator Orchestrator
+@inject McpServerRegistry Registry
+@inject IDbContextFactory<PlaygroundDbContext> DbFactory
+@implements IDisposable
+
+<PageTitle>Chat - Playground MCP</PageTitle>
+
+<MudGrid>
+    <MudItem xs="12" md="3">
+        <MudPaper Class="pa-2" Outlined="true" Style="height: calc(100vh - 130px); overflow-y: auto;">
+            <MudStack Spacing="1">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="NewSession">Nova conversa</MudButton>
+                <MudDivider />
+                @foreach (var s in _sessions)
+                {
+                    <MudButton Variant="@(s.Id == _sessionId ? Variant.Filled : Variant.Text)"
+                               Color="@(s.Id == _sessionId ? Color.Primary : Color.Default)"
+                               OnClick="@(() => LoadSession(s.Id))"
+                               Class="justify-start">
+                        <MudStack Row AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.body2">@s.Title</MudText>
+                        </MudStack>
+                    </MudButton>
+                }
+            </MudStack>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="9">
+        <McpToggleBar @bind-ActiveNames="_activeServers" />
+
+        <MudPaper Class="pa-3" Outlined="true"
+                  Style="height: calc(100vh - 270px); overflow-y: auto;">
+            @foreach (var msg in _messages)
+            {
+                <MessageBubble IsUser="@msg.IsUser" Content="@msg.Content" ToolCalls="@msg.ToolCalls" />
+            }
+            @if (_streaming)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="my-2" />
+            }
+        </MudPaper>
+
+        <MudStack Row Class="mt-2" Spacing="2">
+            <MudTextField @bind-Value="_input"
+                          Placeholder="Digite sua mensagem..."
+                          Variant="Variant.Outlined"
+                          Lines="2"
+                          OnKeyDown="OnKey"
+                          Disabled="_streaming" />
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       OnClick="Send"
+                       Disabled="_streaming || string.IsNullOrWhiteSpace(_input)"
+                       EndIcon="@Icons.Material.Filled.Send">Enviar</MudButton>
+        </MudStack>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private List<ChatSession> _sessions = new();
+    private List<UiMessage> _messages = new();
+    private Guid _sessionId = Guid.NewGuid();
+    private string _input = "";
+    private bool _streaming;
+    private HashSet<string> _activeServers = new();
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Registry.Changed += OnRegistryChanged;
+        ApplyDefaultActiveServers();
+        await ReloadSessionsAsync();
+    }
+
+    private void OnRegistryChanged()
+    {
+        ApplyDefaultActiveServers();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void ApplyDefaultActiveServers()
+    {
+        foreach (var s in Registry.GetAll())
+        {
+            if (s.EnabledByDefault) _activeServers.Add(s.Name);
+        }
+    }
+
+    private async Task ReloadSessionsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _sessions = await db.ChatSessions
+            .OrderByDescending(s => s.UpdatedAt)
+            .Take(50)
+            .ToListAsync();
+    }
+
+    private async Task LoadSession(Guid id)
+    {
+        _sessionId = id;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var session = await db.ChatSessions
+            .Include(s => s.Messages.OrderBy(m => m.CreatedAt))
+            .FirstOrDefaultAsync(s => s.Id == id);
+        _messages.Clear();
+        if (session is not null)
+        {
+            foreach (var m in session.Messages)
+            {
+                _messages.Add(new UiMessage
+                {
+                    IsUser = m.Role == ChatRole.User,
+                    Content = m.Content
+                });
+            }
+        }
+    }
+
+    private void NewSession()
+    {
+        _sessionId = Guid.NewGuid();
+        _messages.Clear();
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey && !_streaming)
+        {
+            await Send();
+        }
+    }
+
+    private async Task Send()
+    {
+        if (string.IsNullOrWhiteSpace(_input)) return;
+
+        var userText = _input.Trim();
+        _input = "";
+        _messages.Add(new UiMessage { IsUser = true, Content = userText });
+
+        var assistantMsg = new UiMessage { IsUser = false, Content = "", ToolCalls = new() };
+        _messages.Add(assistantMsg);
+        _streaming = true;
+        StateHasChanged();
+
+        var activeConfigs = _activeServers
+            .Select(n => Registry.Get(n))
+            .Where(c => c is not null)
+            .Cast<McpServerConfig>()
+            .ToList();
+
+        _cts = new CancellationTokenSource();
+        try
+        {
+            await foreach (var ev in Orchestrator.SendAsync(_sessionId, userText, activeConfigs, _cts.Token))
+            {
+                switch (ev)
+                {
+                    case TokenEvent t:
+                        assistantMsg.Content += t.Text;
+                        break;
+                    case ToolCallStartedEvent s:
+                        assistantMsg.ToolCalls!.Add(new MessageBubble.ToolCallView
+                        {
+                            PluginName = s.PluginName,
+                            FunctionName = s.FunctionName,
+                            ArgumentsJson = s.ArgumentsJson
+                        });
+                        break;
+                    case ToolCallCompletedEvent c:
+                        var card = assistantMsg.ToolCalls!
+                            .LastOrDefault(x => x.PluginName == c.PluginName && x.FunctionName == c.FunctionName && !x.IsCompleted);
+                        if (card is not null)
+                        {
+                            card.ResultJson = c.ResultJson;
+                            card.Elapsed = c.Elapsed;
+                            card.IsCompleted = true;
+                            card.IsError = c.IsError;
+                        }
+                        break;
+                    case ErrorEvent err:
+                        assistantMsg.Content += $"\n[erro] {err.Message}";
+                        break;
+                }
+                StateHasChanged();
+            }
+        }
+        finally
+        {
+            _streaming = false;
+            await ReloadSessionsAsync();
+            StateHasChanged();
+        }
+    }
+
+    public void Dispose()
+    {
+        Registry.Changed -= OnRegistryChanged;
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+
+    private sealed class UiMessage
+    {
+        public bool IsUser { get; set; }
+        public string Content { get; set; } = "";
+        public List<MessageBubble.ToolCallView>? ToolCalls { get; set; }
+    }
+}

@@ -1,0 +1,47 @@
+@namespace PlayGroundMCPClient.Web.Components.Chat
+
+<MudPaper Class="@BubbleClass" Elevation="1" Style="@BubbleStyle">
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        @(IsUser ? "Voce" : "Assistant")
+    </MudText>
+
+    @if (ToolCalls is not null && ToolCalls.Count > 0)
+    {
+        <MudStack Spacing="1" Class="my-1">
+            @foreach (var tc in ToolCalls)
+            {
+                <ToolCallCard PluginName="@tc.PluginName"
+                              FunctionName="@tc.FunctionName"
+                              ArgumentsJson="@tc.ArgumentsJson"
+                              ResultJson="@tc.ResultJson"
+                              Elapsed="@tc.Elapsed"
+                              IsCompleted="@tc.IsCompleted"
+                              IsError="@tc.IsError" />
+            }
+        </MudStack>
+    }
+
+    <MudText Typo="Typo.body1" Style="white-space: pre-wrap;">@Content</MudText>
+</MudPaper>
+
+@code {
+    [Parameter] public bool IsUser { get; set; }
+    [Parameter] public string Content { get; set; } = "";
+    [Parameter] public List<ToolCallView>? ToolCalls { get; set; }
+
+    private string BubbleClass => IsUser ? "pa-3 my-2 ml-auto" : "pa-3 my-2 mr-auto";
+    private string BubbleStyle => IsUser
+        ? "max-width: 80%; background: #2c3e50;"
+        : "max-width: 80%; background: #1f1f1f;";
+
+    public sealed class ToolCallView
+    {
+        public string PluginName { get; set; } = "";
+        public string FunctionName { get; set; } = "";
+        public string ArgumentsJson { get; set; } = "{}";
+        public string? ResultJson { get; set; }
+        public TimeSpan Elapsed { get; set; }
+        public bool IsCompleted { get; set; }
+        public bool IsError { get; set; }
+    }
+}

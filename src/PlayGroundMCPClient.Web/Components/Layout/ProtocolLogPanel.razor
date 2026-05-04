@@ -1,0 +1,79 @@
+@namespace PlayGroundMCPClient.Web.Components.Layout
+@inject ProtocolLogStore Store
+@implements IDisposable
+
+<MudStack Class="pa-3" Spacing="2">
+    <MudStack Row AlignItems="AlignItems.Center">
+        <MudText Typo="Typo.h6">Protocol Log</MudText>
+        <MudSpacer />
+        <MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Size="Size.Small" />
+        <MudIconButton Icon="@Icons.Material.Filled.Delete" OnClick="Clear" Size="Size.Small" Color="Color.Error" />
+    </MudStack>
+
+    <MudTextField @bind-Value="_filter" Placeholder="Filtrar por server ou metodo..."
+                  Variant="Variant.Outlined" Margin="Margin.Dense" />
+
+    <MudStack Spacing="1" Style="max-height: calc(100vh - 200px); overflow-y: auto;">
+        @foreach (var f in Filtered())
+        {
+            <MudPaper Outlined="true" Class="pa-2">
+                <MudStack Row Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@DirIcon(f.Direction)" Size="Size.Small"
+                             Color="@DirColor(f.Direction)" />
+                    <MudChip T="string" Size="Size.Small">@f.ServerName</MudChip>
+                    @if (!string.IsNullOrEmpty(f.Method))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Tertiary">@f.Method</MudChip>
+                    }
+                    <MudSpacer />
+                    <MudText Typo="Typo.caption">@f.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</MudText>
+                </MudStack>
+                <MudExpansionPanel Text="payload" Dense="true">
+                    <pre style="white-space: pre-wrap; font-size: 0.75rem; margin:0;">@f.Payload</pre>
+                </MudExpansionPanel>
+            </MudPaper>
+        }
+        @if (!Filtered().Any())
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Nenhum frame ainda.</MudText>
+        }
+    </MudStack>
+</MudStack>
+
+@code {
+    private string _filter = "";
+
+    protected override void OnInitialized() => Store.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private void Refresh() => StateHasChanged();
+    private void Clear() => Store.Clear();
+
+    private IEnumerable<ProtocolFrame> Filtered()
+    {
+        var snap = Store.Snapshot();
+        if (string.IsNullOrWhiteSpace(_filter)) return snap.Reverse();
+        var f = _filter.Trim();
+        return snap.Where(x =>
+            x.ServerName.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            (x.Method?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false))
+            .Reverse();
+    }
+
+    private static string DirIcon(FrameDirection d) => d switch
+    {
+        FrameDirection.Outbound => Icons.Material.Filled.ArrowUpward,
+        FrameDirection.Inbound => Icons.Material.Filled.ArrowDownward,
+        _ => Icons.Material.Filled.Info
+    };
+
+    private static Color DirColor(FrameDirection d) => d switch
+    {
+        FrameDirection.Outbound => Color.Warning,
+        FrameDirection.Inbound => Color.Success,
+        _ => Color.Info
+    };
+
+    public void Dispose() => Store.Changed -= OnChanged;
+}

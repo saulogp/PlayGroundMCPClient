@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+.idea/
+*.db
+*.db-wal
+*.db-shm
+mcp-servers.user.json
+appsettings.Development.json
+.claude/settings.local.json

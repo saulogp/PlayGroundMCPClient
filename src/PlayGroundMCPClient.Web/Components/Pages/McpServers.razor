@@ -1,0 +1,106 @@
+@page "/mcp-servers"
+@using System.Text.Json
+@inject McpServerRegistry Registry
+@inject McpClientPool Pool
+@inject ISnackbar Snackbar
+@inject IDialogService Dialog
+@implements IDisposable
+
+<PageTitle>MCP Servers - Playground MCP</PageTitle>
+
+<MudStack Row Class="mb-2" AlignItems="AlignItems.Center">
+    <MudText Typo="Typo.h5">MCP Servers</MudText>
+    <MudSpacer />
+    <MudButton StartIcon="@Icons.Material.Filled.Add"
+               Variant="Variant.Filled"
+               Color="Color.Primary"
+               OnClick="OpenAddDialog">Adicionar</MudButton>
+</MudStack>
+
+<MudTable Items="_servers" Dense="true" Hover="true" Bordered="true">
+    <HeaderContent>
+        <MudTh>Nome</MudTh>
+        <MudTh>URL</MudTh>
+        <MudTh>Origem</MudTh>
+        <MudTh>Default</MudTh>
+        <MudTh>Acoes</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.Name</MudTd>
+        <MudTd>@context.Url</MudTd>
+        <MudTd>
+            <MudChip T="string" Size="Size.Small"
+                     Color="@(context.Source == McpServerSource.File ? Color.Info : Color.Secondary)">
+                @context.Source
+            </MudChip>
+        </MudTd>
+        <MudTd>@(context.EnabledByDefault ? "Sim" : "Nao")</MudTd>
+        <MudTd>
+            <MudButton Size="Size.Small" OnClick="@(() => InspectAsync(context))">Inspect</MudButton>
+            <MudButton Size="Size.Small" OnClick="@(() => TestAsync(context))">Test</MudButton>
+            @if (context.Source == McpServerSource.Ui)
+            {
+                <MudButton Size="Size.Small" Color="Color.Error"
+                           OnClick="@(() => Remove(context.Name))">Remove</MudButton>
+            }
+        </MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    private IReadOnlyList<McpServerConfig> _servers = Array.Empty<McpServerConfig>();
+
+    protected override void OnInitialized()
+    {
+        _servers = Registry.GetAll();
+        Registry.Changed += Reload;
+    }
+
+    private void Reload()
+    {
+        _servers = Registry.GetAll();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OpenAddDialog()
+    {
+        var dialog = await Dialog.ShowAsync<AddServerDialog>("Adicionar MCP server");
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: McpServerConfig cfg })
+        {
+            Registry.AddOrUpdate(cfg);
+            Snackbar.Add($"Server '{cfg.Name}' adicionado", Severity.Success);
+        }
+    }
+
+    private void Remove(string name)
+    {
+        if (Registry.Remove(name))
+        {
+            Snackbar.Add($"Server '{name}' removido", Severity.Info);
+        }
+    }
+
+    private async Task TestAsync(McpServerConfig cfg)
+    {
+        try
+        {
+            var client = await Pool.GetAsync(cfg);
+            var info = client.ServerInfo;
+            Snackbar.Add($"OK: {info?.Name} v{info?.Version}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Falha: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task InspectAsync(McpServerConfig cfg)
+    {
+        var parameters = new DialogParameters { ["Config"] = cfg };
+        await Dialog.ShowAsync<InspectorDialog>($"Inspector: {cfg.Name}", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true });
+    }
+
+    public void Dispose() => Registry.Changed -= Reload;
+}

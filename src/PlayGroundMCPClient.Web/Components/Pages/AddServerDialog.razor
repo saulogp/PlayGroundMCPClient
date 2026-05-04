@@ -1,0 +1,60 @@
+@namespace PlayGroundMCPClient.Web.Components.Pages
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="_name" Label="Nome (unico)" Required="true" />
+            <MudTextField @bind-Value="_url" Label="URL StreamableHTTP" Required="true"
+                          HelperText="Ex.: http://localhost:5050/mcp" />
+            <MudCheckBox T="bool" @bind-Value="_enabled" Label="Habilitar por padrao em novos chats" />
+            <MudText Typo="Typo.subtitle2" Class="mt-2">Headers (opcional)</MudText>
+            @foreach (var h in _headers)
+            {
+                <MudStack Row Spacing="1">
+                    <MudTextField @bind-Value="h.Key" Label="Key" />
+                    <MudTextField @bind-Value="h.Value" Label="Value" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                   OnClick="@(() => _headers.Remove(h))" Size="Size.Small" />
+                </MudStack>
+            }
+            <MudButton Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                       OnClick="@(() => _headers.Add(new HeaderEntry()))">Add header</MudButton>
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit">Salvar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private string _name = "";
+    private string _url = "";
+    private bool _enabled;
+    private List<HeaderEntry> _headers = new();
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Submit()
+    {
+        if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_url)) return;
+        var cfg = new McpServerConfig
+        {
+            Name = _name.Trim(),
+            Url = _url.Trim(),
+            EnabledByDefault = _enabled,
+            Headers = _headers
+                .Where(h => !string.IsNullOrWhiteSpace(h.Key))
+                .ToDictionary(h => h.Key.Trim(), h => h.Value ?? "")
+        };
+        MudDialog.Close(DialogResult.Ok(cfg));
+    }
+
+    private sealed class HeaderEntry
+    {
+        public string Key { get; set; } = "";
+        public string Value { get; set; } = "";
+    }
+}

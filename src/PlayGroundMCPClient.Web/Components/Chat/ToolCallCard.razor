@@ -1,0 +1,36 @@
+@namespace PlayGroundMCPClient.Web.Components.Chat
+
+<MudPaper Class="pa-2 my-1" Outlined="true">
+    <MudStack Row Spacing="2" AlignItems="AlignItems.Center">
+        <MudIcon Icon="@(IsCompleted ? (IsError ? Icons.Material.Filled.Error : Icons.Material.Filled.CheckCircle) : Icons.Material.Filled.HourglassTop)"
+                 Color="@(IsCompleted ? (IsError ? Color.Error : Color.Success) : Color.Warning)" />
+        <MudChip T="string" Size="Size.Small" Color="Color.Info">@PluginName</MudChip>
+        <MudText Typo="Typo.body2"><b>@FunctionName</b></MudText>
+        @if (IsCompleted)
+        {
+            <MudText Typo="Typo.caption" Class="ml-auto">@($"{Elapsed.TotalMilliseconds:N0} ms")</MudText>
+        }
+    </MudStack>
+
+    <MudExpansionPanels Class="mt-1" Dense="true" Elevation="0">
+        <MudExpansionPanel Text="Input">
+            <pre style="white-space: pre-wrap; font-size: 0.8rem;">@ArgumentsJson</pre>
+        </MudExpansionPanel>
+        @if (IsCompleted)
+        {
+            <MudExpansionPanel Text="@(IsError ? "Error" : "Output")">
+                <pre style="white-space: pre-wrap; font-size: 0.8rem;">@ResultJson</pre>
+            </MudExpansionPanel>
+        }
+    </MudExpansionPanels>
+</MudPaper>
+
+@code {
+    [Parameter] public string PluginName { get; set; } = "";
+    [Parameter] public string FunctionName { get; set; } = "";
+    [Parameter] public string ArgumentsJson { get; set; } = "{}";
+    [Parameter] public string? ResultJson { get; set; }
+    [Parameter] public TimeSpan Elapsed { get; set; }
+    [Parameter] public bool IsCompleted { get; set; }
+    [Parameter] public bool IsError { get; set; }
+}
