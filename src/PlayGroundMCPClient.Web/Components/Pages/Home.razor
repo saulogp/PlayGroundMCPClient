@@ -2,7 +2,9 @@
 @using System.Text.Json
 @inject ChatOrchestrator Orchestrator
 @inject McpServerRegistry Registry
+@inject AzureOpenAIStore AzureStore
 @inject IDbContextFactory<PlaygroundDbContext> DbFactory
+@inject NavigationManager Nav
 @implements IDisposable
 
 <PageTitle>Chat - Playground MCP</PageTitle>
@@ -31,6 +33,19 @@
     </MudItem>
 
     <MudItem xs="12" md="9">
+        @if (!AzureStore.Current.IsConfigured)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2"
+                      ContentAlignment="HorizontalAlignment.Left">
+                <MudStack Row AlignItems="AlignItems.Center">
+                    <MudText>Azure OpenAI nao configurado.</MudText>
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                               OnClick="GoToSettings">
+                        Configurar
+                    </MudButton>
+                </MudStack>
+            </MudAlert>
+        }
         <McpToggleBar @bind-ActiveNames="_activeServers" />
 
         <MudPaper Class="pa-3" Outlined="true"
@@ -197,6 +212,8 @@
             StateHasChanged();
         }
     }
+
+    private void GoToSettings() => Nav.NavigateTo("/settings");
 
     public void Dispose()
     {

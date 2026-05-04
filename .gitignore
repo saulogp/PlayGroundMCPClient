@@ -8,5 +8,6 @@ obj/
 *.db-wal
 *.db-shm
 mcp-servers.user.json
+azure-openai.user.json
 appsettings.Development.json
 .claude/settings.local.json

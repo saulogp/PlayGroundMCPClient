@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
@@ -21,7 +20,7 @@ namespace PlayGroundMCPClient.Web.Services;
 public sealed class ChatOrchestrator(
     PlaygroundDbContext db,
     McpClientPool pool,
-    IOptionsMonitor<AzureOpenAIOptions> azureOptions,
+    AzureOpenAIStore azureStore,
     ILoggerFactory loggerFactory,
     ILogger<ChatOrchestrator> log)
 {
@@ -31,10 +30,10 @@ public sealed class ChatOrchestrator(
         IReadOnlyList<McpServerConfig> activeServers,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var azure = azureOptions.CurrentValue;
+        var azure = azureStore.Current;
         if (!azure.IsConfigured)
         {
-            yield return new ErrorEvent("Azure OpenAI nao configurado em appsettings.json (Endpoint/Deployment/ApiKey).");
+            yield return new ErrorEvent("Azure OpenAI nao configurado. Va em /settings e preencha Endpoint/Deployment/ApiKey.");
             yield break;
         }
 

@@ -1,0 +1,136 @@
+@page "/settings"
+@using Microsoft.SemanticKernel
+@using Microsoft.SemanticKernel.ChatCompletion
+@using Microsoft.SemanticKernel.Connectors.AzureOpenAI
+@inject AzureOpenAIStore Store
+@inject ISnackbar Snackbar
+
+<PageTitle>Settings - Playground MCP</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-3">Azure OpenAI</MudText>
+
+<MudPaper Class="pa-4" Outlined="true" Style="max-width: 720px;">
+    <MudStack Spacing="3">
+        <MudTextField @bind-Value="_endpoint"
+                      Label="Endpoint"
+                      HelperText="Ex.: https://meu-recurso.openai.azure.com/"
+                      Variant="Variant.Outlined"
+                      Required="true" />
+
+        <MudTextField @bind-Value="_deployment"
+                      Label="Deployment / Model name"
+                      HelperText="Nome do deployment no Azure (ex.: gpt-4o, gpt-4.1)"
+                      Variant="Variant.Outlined"
+                      Required="true" />
+
+        <MudTextField @bind-Value="_apiKey"
+                      Label="API Key"
+                      InputType="@(_showKey ? InputType.Text : InputType.Password)"
+                      Variant="Variant.Outlined"
+                      Adornment="Adornment.End"
+                      AdornmentIcon="@(_showKey ? Icons.Material.Filled.VisibilityOff : Icons.Material.Filled.Visibility)"
+                      OnAdornmentClick="@(() => _showKey = !_showKey)"
+                      Required="true" />
+
+        <MudTextField @bind-Value="_apiVersion"
+                      Label="API Version"
+                      HelperText="Default: 2024-10-21"
+                      Variant="Variant.Outlined" />
+
+        <MudStack Row Spacing="2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Save"
+                       OnClick="Save">Salvar</MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                       StartIcon="@Icons.Material.Filled.Bolt"
+                       OnClick="TestConnection"
+                       Disabled="_testing">
+                @(_testing ? "Testando..." : "Testar conexao")
+            </MudButton>
+            <MudSpacer />
+            @if (_status is not null)
+            {
+                <MudChip T="string" Color="@(_statusOk ? Color.Success : Color.Error)" Size="Size.Small">
+                    @_status
+                </MudChip>
+            }
+        </MudStack>
+
+        <MudAlert Severity="Severity.Info" Dense="true">
+            Os valores ficam em <code>azure-openai.user.json</code> (gitignored).
+            Voce tambem pode definir via <code>appsettings.json</code> ou variaveis de ambiente
+            (<code>AzureOpenAI__Endpoint</code>, etc.).
+        </MudAlert>
+    </MudStack>
+</MudPaper>
+
+@code {
+    private string _endpoint = "";
+    private string _deployment = "";
+    private string _apiKey = "";
+    private string _apiVersion = "2024-10-21";
+    private bool _showKey;
+    private bool _testing;
+    private string? _status;
+    private bool _statusOk;
+
+    protected override void OnInitialized()
+    {
+        var c = Store.Current;
+        _endpoint = c.Endpoint;
+        _deployment = c.Deployment;
+        _apiKey = c.ApiKey;
+        _apiVersion = string.IsNullOrWhiteSpace(c.ApiVersion) ? "2024-10-21" : c.ApiVersion;
+    }
+
+    private void Save()
+    {
+        Store.Update(new AzureOpenAIOptions
+        {
+            Endpoint = _endpoint.Trim(),
+            Deployment = _deployment.Trim(),
+            ApiKey = _apiKey.Trim(),
+            ApiVersion = string.IsNullOrWhiteSpace(_apiVersion) ? "2024-10-21" : _apiVersion.Trim()
+        });
+        Snackbar.Add("Configuracao salva", Severity.Success);
+    }
+
+    private async Task TestConnection()
+    {
+        if (string.IsNullOrWhiteSpace(_endpoint) || string.IsNullOrWhiteSpace(_deployment) || string.IsNullOrWhiteSpace(_apiKey))
+        {
+            _status = "Preencha endpoint, deployment e key";
+            _statusOk = false;
+            return;
+        }
+
+        _testing = true;
+        _status = null;
+        StateHasChanged();
+
+        try
+        {
+            var builder = Kernel.CreateBuilder();
+            builder.AddAzureOpenAIChatCompletion(_deployment.Trim(), _endpoint.Trim(), _apiKey.Trim());
+            var kernel = builder.Build();
+            var chat = kernel.GetRequiredService<IChatCompletionService>();
+            var history = new ChatHistory();
+            history.AddUserMessage("ping");
+            var resp = await chat.GetChatMessageContentAsync(history);
+            _status = $"OK: {Truncate(resp.Content, 40)}";
+            _statusOk = true;
+        }
+        catch (Exception ex)
+        {
+            _status = $"Falha: {Truncate(ex.Message, 80)}";
+            _statusOk = false;
+        }
+        finally
+        {
+            _testing = false;
+        }
+    }
+
+    private static string Truncate(string? s, int max) =>
+        s is null ? "" : (s.Length <= max ? s : s[..max] + "...");
+}

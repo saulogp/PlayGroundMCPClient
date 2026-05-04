@@ -30,6 +30,7 @@ builder.Services.AddScoped(sp =>
 builder.Services.AddSingleton<ProtocolLogStore>();
 builder.Services.AddSingleton<McpServerRegistry>();
 builder.Services.AddSingleton<McpClientPool>();
+builder.Services.AddSingleton<AzureOpenAIStore>();
 builder.Services.AddScoped<ChatOrchestrator>();
 
 var app = builder.Build();
