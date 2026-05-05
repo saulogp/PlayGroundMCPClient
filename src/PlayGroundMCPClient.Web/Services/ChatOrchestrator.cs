@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
@@ -9,6 +10,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using PlayGroundMCPClient.Web.Data;
 using PlayGroundMCPClient.Web.Models;
 
@@ -258,7 +260,7 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
         try
         {
             var dict = args.ToDictionary(k => k.Key, v => v.Value);
-            return JsonSerializer.Serialize(dict, JsonOpts);
+            return PrettifyIfJson(JsonSerializer.Serialize(dict, JsonOpts));
         }
         catch
         {
@@ -269,10 +271,68 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
     private static string SerializeResult(object? result)
     {
         if (result is null) return "null";
-        if (result is string s) return s;
+        if (result is string s) return PrettifyIfJson(s);
+
+        // MCP tool results often arrive as ContentBlock / IList<ContentBlock>.
+        // Show the inner text directly instead of the protocol envelope.
+        if (TryExtractContentText(result, out var text))
+        {
+            return PrettifyIfJson(text);
+        }
+
         try { return JsonSerializer.Serialize(result, JsonOpts); }
         catch { return result.ToString() ?? ""; }
     }
 
-    private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static bool TryExtractContentText(object result, out string text)
+    {
+        if (result is TextContentBlock tb)
+        {
+            text = tb.Text ?? "";
+            return true;
+        }
+        if (result is IEnumerable<ContentBlock> blocks)
+        {
+            var sb = new StringBuilder();
+            foreach (var b in blocks)
+            {
+                if (b is TextContentBlock t && !string.IsNullOrEmpty(t.Text))
+                {
+                    if (sb.Length > 0) sb.AppendLine();
+                    sb.Append(t.Text);
+                }
+            }
+            if (sb.Length > 0)
+            {
+                text = sb.ToString();
+                return true;
+            }
+        }
+        text = "";
+        return false;
+    }
+
+    private static string PrettifyIfJson(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return raw;
+        var trimmed = raw.TrimStart();
+        if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '[')) return raw;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            return JsonSerializer.Serialize(doc.RootElement, JsonOpts);
+        }
+        catch
+        {
+            return raw;
+        }
+    }
+
+    // UnsafeRelaxedJsonEscaping keeps " as \" and accents as themselves instead
+    // of escaping to \u00XX, so tool-call cards in the chat read naturally.
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 }
