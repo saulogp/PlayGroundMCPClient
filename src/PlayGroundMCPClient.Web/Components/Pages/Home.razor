@@ -63,7 +63,32 @@
                   Style="height: calc(100vh - 270px); overflow-y: auto;">
             @foreach (var msg in _messages)
             {
-                <MessageBubble IsUser="@msg.IsUser" Content="@msg.Content" ToolCalls="@msg.ToolCalls" />
+                if (msg.Kind == UiMessageKind.Attachment)
+                {
+                    <MudPaper Class="pa-2 my-2 mr-auto" Outlined="true" Style="max-width: 80%;">
+                        <MudStack Row Spacing="1" AlignItems="AlignItems.Center">
+                            <MudIcon Icon="@Icons.Material.Filled.AttachFile" Size="Size.Small" />
+                            <MudText Typo="Typo.caption" Style="font-weight: 500; word-break: break-all;">
+                                @msg.AttachmentLabel
+                            </MudText>
+                            <MudSpacer />
+                            <MudIconButton Size="Size.Small"
+                                           Icon="@(msg.Expanded ? Icons.Material.Filled.UnfoldLess : Icons.Material.Filled.UnfoldMore)"
+                                           OnClick="@(() => msg.Expanded = !msg.Expanded)" />
+                        </MudStack>
+                        @if (msg.Expanded)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary"
+                                     Style="white-space: pre-wrap; word-break: break-all;">@msg.Content</MudText>
+                        }
+                    </MudPaper>
+                }
+                else
+                {
+                    <MessageBubble IsUser="@(msg.Kind == UiMessageKind.User)"
+                                   Content="@msg.Content"
+                                   ToolCalls="@msg.ToolCalls" />
+                }
             }
             @if (_streaming)
             {
@@ -152,11 +177,24 @@
         {
             foreach (var m in session.Messages)
             {
-                _messages.Add(new UiMessage
+                if (m.Role == ChatRole.System &&
+                    TryParseAttachment(m.Content, out var label, out var body))
                 {
-                    IsUser = m.Role == ChatRole.User,
-                    Content = m.Content
-                });
+                    _messages.Add(new UiMessage
+                    {
+                        Kind = UiMessageKind.Attachment,
+                        AttachmentLabel = label,
+                        Content = body
+                    });
+                }
+                else if (m.Role == ChatRole.User || m.Role == ChatRole.Assistant)
+                {
+                    _messages.Add(new UiMessage
+                    {
+                        Kind = m.Role == ChatRole.User ? UiMessageKind.User : UiMessageKind.Assistant,
+                        Content = m.Content
+                    });
+                }
             }
         }
     }
@@ -185,9 +223,9 @@
 
         var userText = _input.Trim();
         _input = "";
-        _messages.Add(new UiMessage { IsUser = true, Content = userText });
+        _messages.Add(new UiMessage { Kind = UiMessageKind.User, Content = userText });
 
-        var assistantMsg = new UiMessage { IsUser = false, Content = "", ToolCalls = new() };
+        var assistantMsg = new UiMessage { Kind = UiMessageKind.Assistant, Content = "", ToolCalls = new() };
         _messages.Add(assistantMsg);
         _streaming = true;
         StateHasChanged();
@@ -244,13 +282,59 @@
 
     private void GoToSettings() => Nav.NavigateTo("/settings");
 
-    private Task OpenPromptPicker() =>
-        OpenPickerAsync<PromptPickerDialog>("Selecionar prompt", "listar prompts");
+    private async Task OpenPromptPicker()
+    {
+        var result = await ShowPickerAsync<PromptPickerDialog>("Selecionar prompt", "listar prompts");
+        if (result?.Data is string text && !string.IsNullOrEmpty(text))
+        {
+            _input = string.IsNullOrEmpty(_input) ? text : _input + "\n" + text;
+            StateHasChanged();
+        }
+    }
 
-    private Task OpenResourcePicker() =>
-        OpenPickerAsync<ResourcePickerDialog>("Selecionar resource", "listar resources");
+    private async Task OpenResourcePicker()
+    {
+        var result = await ShowPickerAsync<ResourcePickerDialog>("Selecionar resource", "listar resources");
+        if (result?.Data is not ResourcePickerDialog.ResourceAttachment att) return;
 
-    private async Task OpenPickerAsync<TDialog>(string title, string actionLabel)
+        var envelope = BuildAttachmentEnvelope(att.Server, att.Uri, att.DisplayName, att.MimeType, att.Text);
+
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            var sessionExists = await db.ChatSessions
+                .AsNoTracking()
+                .AnyAsync(s => s.Id == _sessionId);
+            if (!sessionExists)
+            {
+                db.ChatSessions.Add(new ChatSession
+                {
+                    Id = _sessionId,
+                    Title = $"Anexo: {att.DisplayName}"
+                });
+            }
+            db.ChatMessages.Add(new ChatMessage
+            {
+                ChatSessionId = _sessionId,
+                Role = ChatRole.System,
+                Content = envelope
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var label = $"{att.Server} :: {att.DisplayName}" +
+                    (string.IsNullOrEmpty(att.MimeType) ? "" : $" ({att.MimeType})");
+        _messages.Add(new UiMessage
+        {
+            Kind = UiMessageKind.Attachment,
+            AttachmentLabel = label,
+            Content = att.Text
+        });
+        await ReloadSessionsAsync();
+        Snackbar.Add($"Resource '{att.DisplayName}' anexado ao contexto.", Severity.Success);
+        StateHasChanged();
+    }
+
+    private async Task<DialogResult?> ShowPickerAsync<TDialog>(string title, string actionLabel)
         where TDialog : ComponentBase
     {
         var activeConfigs = _activeServers
@@ -262,7 +346,7 @@
         if (activeConfigs.Count == 0)
         {
             Snackbar.Add($"Ative ao menos um MCP para {actionLabel}.", Severity.Info);
-            return;
+            return null;
         }
 
         var parameters = new DialogParameters
@@ -272,13 +356,28 @@
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
         var dlg = await Dialog.ShowAsync<TDialog>(title, parameters, options);
         var result = await dlg.Result;
-        if (result is null || result.Canceled) return;
+        return result is null || result.Canceled ? null : result;
+    }
 
-        if (result.Data is string text && !string.IsNullOrEmpty(text))
-        {
-            _input = string.IsNullOrEmpty(_input) ? text : _input + "\n" + text;
-            StateHasChanged();
-        }
+    private const string AttachmentMarker = "[Anexo MCP] ";
+
+    private static string BuildAttachmentEnvelope(string server, string uri, string name, string? mime, string text)
+    {
+        var mimePart = string.IsNullOrEmpty(mime) ? "" : $" ({mime})";
+        return $"{AttachmentMarker}{server} :: {name}{mimePart}\nURI: {uri}\n\n{text}";
+    }
+
+    private static bool TryParseAttachment(string content, out string label, out string body)
+    {
+        label = "";
+        body = "";
+        if (!content.StartsWith(AttachmentMarker)) return false;
+        var firstNewline = content.IndexOf('\n');
+        if (firstNewline < 0) return false;
+        label = content[AttachmentMarker.Length..firstNewline];
+        var blank = content.IndexOf("\n\n", firstNewline);
+        body = blank >= 0 ? content[(blank + 2)..] : "";
+        return true;
     }
 
     private async Task DeleteSession(ChatSession session)
@@ -307,10 +406,14 @@
         _cts?.Dispose();
     }
 
+    private enum UiMessageKind { User, Assistant, Attachment }
+
     private sealed class UiMessage
     {
-        public bool IsUser { get; set; }
+        public UiMessageKind Kind { get; set; }
         public string Content { get; set; } = "";
+        public string AttachmentLabel { get; set; } = "";
+        public bool Expanded { get; set; }
         public List<MessageBubble.ToolCallView>? ToolCalls { get; set; }
     }
 }

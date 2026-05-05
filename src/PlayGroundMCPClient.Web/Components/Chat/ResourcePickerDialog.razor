@@ -111,7 +111,13 @@
                     Severity.Warning);
                 return;
             }
-            MudDialog.Close(DialogResult.Ok(text));
+            var attachment = new ResourceAttachment(
+                Server: entry.Config.Name,
+                Uri: entry.Resource.Uri,
+                DisplayName: entry.Resource.Title ?? entry.Resource.Name,
+                MimeType: entry.Resource.MimeType,
+                Text: text);
+            MudDialog.Close(DialogResult.Ok(attachment));
         }
         catch (Exception ex)
         {
@@ -139,4 +145,11 @@
 
     private sealed record ResourceGroup(string Server, List<ResourceEntry> Resources);
     private sealed record ResourceEntry(McpServerConfig Config, McpClientResource Resource);
+
+    public sealed record ResourceAttachment(
+        string Server,
+        string Uri,
+        string DisplayName,
+        string? MimeType,
+        string Text);
 }
