@@ -76,34 +76,51 @@ public sealed class ChatOrchestrator(
         Channel<ChatStreamEvent> channel,
         CancellationToken ct)
     {
-        // Phase 1: load (or create) session, persist user message, snapshot history.
-        // Use a short-lived context so the long LLM stream doesn't hold tracking state.
+        // Phase 1: ensure session exists, persist user message, snapshot history.
+        // Never track an existing ChatSession as Modified — bumping UpdatedAt that
+        // way intermittently produced a DbUpdateConcurrencyException ("0 rows
+        // affected") on the second turn. Insert the new message and update the
+        // timestamp via ExecuteUpdate so the change tracker only handles Added rows.
         List<(ChatRole Role, string Content)> historySnapshot;
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
-            var session = await db.ChatSessions
-                .Include(s => s.Messages.OrderBy(m => m.CreatedAt))
-                .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+            var sessionExists = await db.ChatSessions
+                .AsNoTracking()
+                .AnyAsync(s => s.Id == sessionId, ct);
 
-            if (session is null)
+            if (!sessionExists)
             {
-                session = new ChatSession { Id = sessionId, Title = Truncate(userMessage, 60) };
-                db.ChatSessions.Add(session);
+                db.ChatSessions.Add(new ChatSession
+                {
+                    Id = sessionId,
+                    Title = Truncate(userMessage, 60)
+                });
             }
 
-            session.Messages.Add(new ChatMessage
+            db.ChatMessages.Add(new ChatMessage
             {
-                ChatSessionId = session.Id,
+                ChatSessionId = sessionId,
                 Role = ChatRole.User,
                 Content = userMessage
             });
-            session.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
 
-            historySnapshot = session.Messages
+            if (sessionExists)
+            {
+                await db.ChatSessions
+                    .Where(s => s.Id == sessionId)
+                    .ExecuteUpdateAsync(
+                        s => s.SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
+                        ct);
+            }
+
+            var rows = await db.ChatMessages
+                .AsNoTracking()
+                .Where(m => m.ChatSessionId == sessionId)
                 .OrderBy(m => m.CreatedAt)
-                .Select(m => (m.Role, m.Content))
-                .ToList();
+                .Select(m => new { m.Role, m.Content })
+                .ToListAsync(ct);
+            historySnapshot = rows.Select(r => (r.Role, r.Content)).ToList();
         }
 
         // Phase 2: build kernel + run streaming chat completion (no DB context held).
