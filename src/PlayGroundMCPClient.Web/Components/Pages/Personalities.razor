@@ -1,0 +1,95 @@
+@page "/personalities"
+@inject PersonalityRegistry Registry
+@inject ISnackbar Snackbar
+@inject IDialogService Dialog
+@implements IDisposable
+
+<PageTitle>Personalidades - Playground MCP</PageTitle>
+
+<MudStack Row Class="mb-2" AlignItems="AlignItems.Center">
+    <MudText Typo="Typo.h5">Personalidades</MudText>
+    <MudSpacer />
+    <MudButton StartIcon="@Icons.Material.Filled.Add"
+               Variant="Variant.Filled"
+               Color="Color.Primary"
+               OnClick="@(() => Edit(null))">Nova</MudButton>
+</MudStack>
+
+@if (_personalities.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">
+        Nenhuma personalidade ainda. Crie uma para selecionar no chat.
+    </MudAlert>
+}
+else
+{
+    <MudTable Items="_personalities" Dense="true" Hover="true" Bordered="true">
+        <HeaderContent>
+            <MudTh>Nome</MudTh>
+            <MudTh>Prompt</MudTh>
+            <MudTh>Atualizado</MudTh>
+            <MudTh>Acoes</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd Style="font-weight: 500;">@context.Name</MudTd>
+            <MudTd Style="max-width: 480px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                @context.SystemPrompt
+            </MudTd>
+            <MudTd>@context.UpdatedAt.LocalDateTime.ToString("g")</MudTd>
+            <MudTd>
+                <MudButton Size="Size.Small" OnClick="@(() => Edit(context))">Editar</MudButton>
+                <MudButton Size="Size.Small" Color="Color.Error"
+                           OnClick="@(() => Remove(context))">Remover</MudButton>
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+}
+
+@code {
+    private IReadOnlyList<Personality> _personalities = Array.Empty<Personality>();
+
+    protected override void OnInitialized()
+    {
+        _personalities = Registry.GetAll();
+        Registry.Changed += Reload;
+    }
+
+    private void Reload()
+    {
+        _personalities = Registry.GetAll();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task Edit(Personality? existing)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Existing"] = existing
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseOnEscapeKey = true };
+        var dlg = await Dialog.ShowAsync<PersonalityDialog>(
+            existing is null ? "Nova personalidade" : "Editar personalidade",
+            parameters, options);
+        var result = await dlg.Result;
+        if (result is { Canceled: false, Data: Personality saved })
+        {
+            Registry.Upsert(saved);
+            Snackbar.Add($"Personalidade '{saved.Name}' salva", Severity.Success);
+        }
+    }
+
+    private async Task Remove(Personality p)
+    {
+        var confirm = await Dialog.ShowMessageBoxAsync(
+            "Remover personalidade",
+            $"Excluir '{p.Name}'? Sessoes que usavam essa personalidade ficarao sem ela.",
+            yesText: "Excluir", cancelText: "Cancelar");
+        if (confirm != true) return;
+        if (Registry.Remove(p.Id))
+        {
+            Snackbar.Add($"Personalidade '{p.Name}' removida", Severity.Info);
+        }
+    }
+
+    public void Dispose() => Registry.Changed -= Reload;
+}

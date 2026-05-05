@@ -1,0 +1,50 @@
+@namespace PlayGroundMCPClient.Web.Components.Pages
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="_name" Label="Nome" Required="true"
+                          Immediate="true" />
+            <MudTextField @bind-Value="_prompt" Label="System prompt" Required="true"
+                          Variant="Variant.Outlined" Lines="10"
+                          HelperText="Instrucoes que serao enviadas como mensagem de sistema ao LLM." />
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   Disabled="@(string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_prompt))"
+                   OnClick="Submit">Salvar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Personality? Existing { get; set; }
+
+    private string _name = "";
+    private string _prompt = "";
+
+    protected override void OnInitialized()
+    {
+        if (Existing is not null)
+        {
+            _name = Existing.Name;
+            _prompt = Existing.SystemPrompt;
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Submit()
+    {
+        if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_prompt)) return;
+        var saved = new Personality
+        {
+            Id = Existing?.Id ?? Guid.NewGuid(),
+            Name = _name.Trim(),
+            SystemPrompt = _prompt.Trim()
+        };
+        MudDialog.Close(DialogResult.Ok(saved));
+    }
+}

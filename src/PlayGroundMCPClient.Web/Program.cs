@@ -27,6 +27,7 @@ builder.Services.AddSingleton<ProtocolLogStore>();
 builder.Services.AddSingleton<McpServerRegistry>();
 builder.Services.AddSingleton<McpClientPool>();
 builder.Services.AddSingleton<LlmStore>();
+builder.Services.AddSingleton<PersonalityRegistry>();
 builder.Services.AddScoped<ChatOrchestrator>();
 
 var app = builder.Build();

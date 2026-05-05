@@ -2,6 +2,7 @@
 @using System.Text.Json
 @inject ChatOrchestrator Orchestrator
 @inject McpServerRegistry Registry
+@inject PersonalityRegistry Personalities
 @inject LlmStore LlmStore
 @inject IDbContextFactory<PlaygroundDbContext> DbFactory
 @inject NavigationManager Nav
@@ -57,6 +58,30 @@
                 </MudStack>
             </MudAlert>
         }
+        <MudPaper Class="pa-2 mb-2" Outlined="true">
+            <MudStack Row Spacing="1" AlignItems="AlignItems.Center">
+                <MudIcon Icon="@Icons.Material.Filled.Psychology" Size="Size.Small" />
+                <MudText Typo="Typo.caption">Personalidade:</MudText>
+                <MudSelect T="Guid?" Value="_activePersonalityId"
+                           ValueChanged="OnPersonalityChanged"
+                           Variant="Variant.Outlined" Dense="true" Margin="Margin.Dense"
+                           Style="min-width: 220px;">
+                    <MudSelectItem T="Guid?" Value="@((Guid?)null)">
+                        <em>Nenhuma</em>
+                    </MudSelectItem>
+                    @foreach (var p in _personalities)
+                    {
+                        <MudSelectItem T="Guid?" Value="@((Guid?)p.Id)">@p.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                @if (_personalities.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        Crie em "Personalidades".
+                    </MudText>
+                }
+            </MudStack>
+        </MudPaper>
         <McpToggleBar @bind-ActiveNames="_activeServers" />
 
         <MudPaper Class="pa-3" Outlined="true"
@@ -133,13 +158,27 @@
     private string _input = "";
     private bool _streaming;
     private HashSet<string> _activeServers = new();
+    private IReadOnlyList<Personality> _personalities = Array.Empty<Personality>();
+    private Guid? _activePersonalityId;
     private CancellationTokenSource? _cts;
 
     protected override async Task OnInitializedAsync()
     {
         Registry.Changed += OnRegistryChanged;
+        Personalities.Changed += OnPersonalitiesChanged;
+        _personalities = Personalities.GetAll();
         ApplyDefaultActiveServers();
         await ReloadSessionsAsync();
+    }
+
+    private void OnPersonalitiesChanged()
+    {
+        _personalities = Personalities.GetAll();
+        if (_activePersonalityId is { } id && _personalities.All(p => p.Id != id))
+        {
+            _activePersonalityId = null;
+        }
+        InvokeAsync(StateHasChanged);
     }
 
     private void OnRegistryChanged()
@@ -173,12 +212,20 @@
             .Include(s => s.Messages.OrderBy(m => m.CreatedAt))
             .FirstOrDefaultAsync(s => s.Id == id);
         _messages.Clear();
+        _activePersonalityId = null;
         if (session is not null)
         {
             foreach (var m in session.Messages)
             {
                 if (m.Role == ChatRole.System &&
-                    TryParseAttachment(m.Content, out var label, out var body))
+                    TryParsePersonality(m.Content, out var personalityName, out _))
+                {
+                    var match = _personalities.FirstOrDefault(p =>
+                        string.Equals(p.Name, personalityName, StringComparison.OrdinalIgnoreCase));
+                    _activePersonalityId = match?.Id;
+                }
+                else if (m.Role == ChatRole.System &&
+                         TryParseAttachment(m.Content, out var label, out var body))
                 {
                     _messages.Add(new UiMessage
                     {
@@ -203,6 +250,7 @@
     {
         _sessionId = Guid.NewGuid();
         _messages.Clear();
+        _activePersonalityId = null;
     }
 
     private bool _preventEnter;
@@ -360,6 +408,7 @@
     }
 
     private const string AttachmentMarker = "[Anexo MCP] ";
+    private const string PersonalityMarker = "[Personalidade] ";
 
     private static string BuildAttachmentEnvelope(string server, string uri, string name, string? mime, string text)
     {
@@ -378,6 +427,75 @@
         var blank = content.IndexOf("\n\n", firstNewline);
         body = blank >= 0 ? content[(blank + 2)..] : "";
         return true;
+    }
+
+    private static string BuildPersonalityEnvelope(string name, string prompt) =>
+        $"{PersonalityMarker}{name}\n\n{prompt}";
+
+    private static bool TryParsePersonality(string content, out string name, out string prompt)
+    {
+        name = "";
+        prompt = "";
+        if (!content.StartsWith(PersonalityMarker)) return false;
+        var firstNewline = content.IndexOf('\n');
+        if (firstNewline < 0) return false;
+        name = content[PersonalityMarker.Length..firstNewline];
+        var blank = content.IndexOf("\n\n", firstNewline);
+        prompt = blank >= 0 ? content[(blank + 2)..] : "";
+        return true;
+    }
+
+    private async Task OnPersonalityChanged(Guid? newId)
+    {
+        if (newId == _activePersonalityId) return;
+        _activePersonalityId = newId;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var sessionExists = await db.ChatSessions
+            .AsNoTracking()
+            .AnyAsync(s => s.Id == _sessionId);
+        if (!sessionExists)
+        {
+            db.ChatSessions.Add(new ChatSession { Id = _sessionId });
+            await db.SaveChangesAsync();
+        }
+
+        var existing = await db.ChatMessages
+            .Where(m => m.ChatSessionId == _sessionId && m.Role == ChatRole.System)
+            .ToListAsync();
+        var stale = existing
+            .Where(m => m.Content.StartsWith(PersonalityMarker))
+            .Select(m => m.Id)
+            .ToList();
+        if (stale.Count > 0)
+        {
+            await db.ChatMessages
+                .Where(m => stale.Contains(m.Id))
+                .ExecuteDeleteAsync();
+        }
+
+        if (newId is { } id)
+        {
+            var personality = _personalities.FirstOrDefault(p => p.Id == id);
+            if (personality is not null)
+            {
+                db.ChatMessages.Add(new ChatMessage
+                {
+                    ChatSessionId = _sessionId,
+                    Role = ChatRole.System,
+                    Content = BuildPersonalityEnvelope(personality.Name, personality.SystemPrompt)
+                });
+                await db.SaveChangesAsync();
+                Snackbar.Add($"Personalidade '{personality.Name}' aplicada.", Severity.Success);
+            }
+        }
+        else
+        {
+            Snackbar.Add("Personalidade removida desta conversa.", Severity.Info);
+        }
+
+        await ReloadSessionsAsync();
+        StateHasChanged();
     }
 
     private async Task DeleteSession(ChatSession session)
@@ -402,6 +520,7 @@
     public void Dispose()
     {
         Registry.Changed -= OnRegistryChanged;
+        Personalities.Changed -= OnPersonalitiesChanged;
         _cts?.Cancel();
         _cts?.Dispose();
     }
