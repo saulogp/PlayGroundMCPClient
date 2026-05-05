@@ -86,6 +86,12 @@
                                OnClick="OpenPromptPicker"
                                Disabled="_streaming" />
             </MudTooltip>
+            <MudTooltip Text="Inserir resource (MCP)">
+                <MudIconButton Icon="@Icons.Material.Filled.AttachFile"
+                               Color="Color.Default"
+                               OnClick="OpenResourcePicker"
+                               Disabled="_streaming" />
+            </MudTooltip>
             <MudButton Variant="Variant.Filled"
                        Color="Color.Primary"
                        OnClick="Send"
@@ -238,7 +244,14 @@
 
     private void GoToSettings() => Nav.NavigateTo("/settings");
 
-    private async Task OpenPromptPicker()
+    private Task OpenPromptPicker() =>
+        OpenPickerAsync<PromptPickerDialog>("Selecionar prompt", "listar prompts");
+
+    private Task OpenResourcePicker() =>
+        OpenPickerAsync<ResourcePickerDialog>("Selecionar resource", "listar resources");
+
+    private async Task OpenPickerAsync<TDialog>(string title, string actionLabel)
+        where TDialog : ComponentBase
     {
         var activeConfigs = _activeServers
             .Select(n => Registry.Get(n))
@@ -248,7 +261,7 @@
 
         if (activeConfigs.Count == 0)
         {
-            Snackbar.Add("Ative ao menos um MCP para listar prompts.", Severity.Info);
+            Snackbar.Add($"Ative ao menos um MCP para {actionLabel}.", Severity.Info);
             return;
         }
 
@@ -257,7 +270,7 @@
             ["ActiveServers"] = (IReadOnlyList<McpServerConfig>)activeConfigs
         };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
-        var dlg = await Dialog.ShowAsync<PromptPickerDialog>("Selecionar prompt", parameters, options);
+        var dlg = await Dialog.ShowAsync<TDialog>(title, parameters, options);
         var result = await dlg.Result;
         if (result is null || result.Canceled) return;
 

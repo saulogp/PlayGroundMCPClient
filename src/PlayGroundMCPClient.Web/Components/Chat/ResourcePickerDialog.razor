@@ -1,0 +1,142 @@
+@namespace PlayGroundMCPClient.Web.Components.Chat
+@using System.Text
+@using ModelContextProtocol.Client
+@using ModelContextProtocol.Protocol
+@inject McpClientPool Pool
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else if (_groups.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Nenhum resource disponivel nos MCPs ativos.
+            </MudText>
+        }
+        else
+        {
+            <MudList T="ResourceEntry" Dense="true" Disabled="@_applying">
+                @foreach (var group in _groups)
+                {
+                    <MudListSubheader>@group.Server</MudListSubheader>
+                    @foreach (var entry in group.Resources)
+                    {
+                        <MudListItem T="ResourceEntry"
+                                     Icon="@Icons.Material.Filled.InsertDriveFile"
+                                     OnClick="@(() => Apply(entry))">
+                            <MudText Typo="Typo.body1">
+                                @(entry.Resource.Title ?? entry.Resource.Name)
+                            </MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary"
+                                     Style="word-break: break-all;">
+                                @entry.Resource.Uri
+                                @if (!string.IsNullOrWhiteSpace(entry.Resource.MimeType))
+                                {
+                                    <span> &middot; @entry.Resource.MimeType</span>
+                                }
+                            </MudText>
+                            @if (!string.IsNullOrWhiteSpace(entry.Resource.Description))
+                            {
+                                <MudText Typo="Typo.caption">@entry.Resource.Description</MudText>
+                            }
+                        </MudListItem>
+                    }
+                }
+            </MudList>
+            @if (_applying)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mt-2" />
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancelar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public IReadOnlyList<McpServerConfig> ActiveServers { get; set; } = Array.Empty<McpServerConfig>();
+
+    private bool _loading = true;
+    private bool _applying;
+    private readonly List<ResourceGroup> _groups = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            foreach (var cfg in ActiveServers)
+            {
+                try
+                {
+                    var client = await Pool.GetAsync(cfg);
+                    var resources = await client.ListResourcesAsync();
+                    if (resources.Count == 0) continue;
+                    _groups.Add(new ResourceGroup(
+                        cfg.Name,
+                        resources.Select(r => new ResourceEntry(cfg, r)).ToList()));
+                }
+                catch (Exception ex)
+                {
+                    Snackbar.Add($"Falha listando resources de '{cfg.Name}': {ex.Message}", Severity.Warning);
+                }
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task Apply(ResourceEntry entry)
+    {
+        if (_applying) return;
+        _applying = true;
+        try
+        {
+            var client = await Pool.GetAsync(entry.Config);
+            var result = await client.ReadResourceAsync(entry.Resource.Uri);
+            var text = ExtractText(result);
+            if (string.IsNullOrEmpty(text))
+            {
+                Snackbar.Add(
+                    "Resource nao tem conteudo de texto (apenas binario). Nao foi inserido.",
+                    Severity.Warning);
+                return;
+            }
+            MudDialog.Close(DialogResult.Ok(text));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Erro ao ler resource: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _applying = false;
+        }
+    }
+
+    private static string ExtractText(ReadResourceResult result)
+    {
+        var sb = new StringBuilder();
+        foreach (var content in result.Contents)
+        {
+            if (content is TextResourceContents t && !string.IsNullOrEmpty(t.Text))
+            {
+                if (sb.Length > 0) sb.AppendLine();
+                sb.Append(t.Text);
+            }
+        }
+        return sb.ToString();
+    }
+
+    private sealed record ResourceGroup(string Server, List<ResourceEntry> Resources);
+    private sealed record ResourceEntry(McpServerConfig Config, McpClientResource Resource);
+}
