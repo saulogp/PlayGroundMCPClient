@@ -71,12 +71,14 @@
             }
         </MudPaper>
 
-        <MudStack Row Class="mt-2" Spacing="2">
+        <MudStack Row Class="mt-2" Spacing="2" AlignItems="AlignItems.End">
             <MudTextField @bind-Value="_input"
-                          Placeholder="Digite sua mensagem..."
+                          Placeholder="Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)"
                           Variant="Variant.Outlined"
                           Lines="2"
+                          Immediate="true"
                           OnKeyDown="OnKey"
+                          KeyDownPreventDefault="_preventEnter"
                           Disabled="_streaming" />
             <MudButton Variant="Variant.Filled"
                        Color="Color.Primary"
@@ -153,9 +155,13 @@
         _messages.Clear();
     }
 
+    private bool _preventEnter;
+
     private async Task OnKey(KeyboardEventArgs e)
     {
-        if (e.Key == "Enter" && !e.ShiftKey && !_streaming)
+        // Enter (without Shift) sends; Shift+Enter inserts a newline as usual.
+        _preventEnter = e.Key == "Enter" && !e.ShiftKey;
+        if (_preventEnter && !_streaming && !string.IsNullOrWhiteSpace(_input))
         {
             await Send();
         }
