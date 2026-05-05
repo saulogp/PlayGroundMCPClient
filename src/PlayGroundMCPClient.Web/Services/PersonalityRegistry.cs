@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using PlayGroundMCPClient.Web.Models;
 
@@ -79,9 +80,13 @@ public sealed class PersonalityRegistry
         }
     }
 
+    // UnsafeRelaxedJsonEscaping keeps quotes as \" and leaves accented characters
+    // (Portuguese é/ã/ç…) as themselves instead of escaping to \u00XX. The file
+    // is local and never served to a browser, so the "unsafe" caveat doesn't apply.
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 }
