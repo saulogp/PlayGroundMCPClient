@@ -80,6 +80,12 @@
                           OnKeyDown="OnKey"
                           KeyDownPreventDefault="_preventEnter"
                           Disabled="_streaming" />
+            <MudTooltip Text="Inserir prompt (MCP)">
+                <MudIconButton Icon="@Icons.Material.Filled.AutoFixHigh"
+                               Color="Color.Default"
+                               OnClick="OpenPromptPicker"
+                               Disabled="_streaming" />
+            </MudTooltip>
             <MudButton Variant="Variant.Filled"
                        Color="Color.Primary"
                        OnClick="Send"
@@ -231,6 +237,36 @@
     }
 
     private void GoToSettings() => Nav.NavigateTo("/settings");
+
+    private async Task OpenPromptPicker()
+    {
+        var activeConfigs = _activeServers
+            .Select(n => Registry.Get(n))
+            .Where(c => c is not null)
+            .Cast<McpServerConfig>()
+            .ToList();
+
+        if (activeConfigs.Count == 0)
+        {
+            Snackbar.Add("Ative ao menos um MCP para listar prompts.", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["ActiveServers"] = (IReadOnlyList<McpServerConfig>)activeConfigs
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dlg = await Dialog.ShowAsync<PromptPickerDialog>("Selecionar prompt", parameters, options);
+        var result = await dlg.Result;
+        if (result is null || result.Canceled) return;
+
+        if (result.Data is string text && !string.IsNullOrEmpty(text))
+        {
+            _input = string.IsNullOrEmpty(_input) ? text : _input + "\n" + text;
+            StateHasChanged();
+        }
+    }
 
     private async Task DeleteSession(ChatSession session)
     {

@@ -1,0 +1,213 @@
+@namespace PlayGroundMCPClient.Web.Components.Chat
+@using System.Text
+@using ModelContextProtocol.Client
+@using ModelContextProtocol.Protocol
+@inject McpClientPool Pool
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else if (_selected is null)
+        {
+            @if (_groups.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Nenhum prompt disponivel nos MCPs ativos.
+                </MudText>
+            }
+            else
+            {
+                <MudList T="PromptEntry" Dense="true">
+                    @foreach (var group in _groups)
+                    {
+                        <MudListSubheader>@group.Server</MudListSubheader>
+                        @foreach (var entry in group.Prompts)
+                        {
+                            <MudListItem T="PromptEntry"
+                                         Icon="@Icons.Material.Filled.Article"
+                                         OnClick="@(() => Select(entry))">
+                                <MudText Typo="Typo.body1">@(entry.Prompt.Title ?? entry.Prompt.Name)</MudText>
+                                @if (!string.IsNullOrWhiteSpace(entry.Prompt.Description))
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @entry.Prompt.Description
+                                    </MudText>
+                                }
+                            </MudListItem>
+                        }
+                    }
+                </MudList>
+            }
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.subtitle1">
+                    @(_selected.Prompt.Title ?? _selected.Prompt.Name)
+                </MudText>
+                @if (!string.IsNullOrWhiteSpace(_selected.Prompt.Description))
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        @_selected.Prompt.Description
+                    </MudText>
+                }
+                @{
+                    var protocolArgs = _selected.Prompt.ProtocolPrompt.Arguments
+                                       ?? (IList<PromptArgument>)Array.Empty<PromptArgument>();
+                }
+                @if (protocolArgs.Count == 0)
+                {
+                    <MudText Typo="Typo.caption">Sem argumentos.</MudText>
+                }
+                else
+                {
+                    @foreach (var arg in protocolArgs)
+                    {
+                        var argName = arg.Name;
+                        var label = arg.Required == true ? $"{arg.Name} *" : arg.Name;
+                        <MudTextField T="string"
+                                      Value="@(_args.TryGetValue(argName, out var v) ? v : string.Empty)"
+                                      ValueChanged="@((string nv) => _args[argName] = nv)"
+                                      Label="@label"
+                                      HelperText="@arg.Description"
+                                      Variant="Variant.Outlined"
+                                      Lines="2" />
+                    }
+                }
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        @if (_selected is not null)
+        {
+            <MudButton OnClick="Back">Voltar</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                       Disabled="@_applying" OnClick="Apply">
+                @if (_applying)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                }
+                else
+                {
+                    <span>Inserir no chat</span>
+                }
+            </MudButton>
+        }
+        else
+        {
+            <MudButton OnClick="Cancel">Cancelar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public IReadOnlyList<McpServerConfig> ActiveServers { get; set; } = Array.Empty<McpServerConfig>();
+
+    private bool _loading = true;
+    private bool _applying;
+    private readonly List<PromptGroup> _groups = new();
+    private PromptEntry? _selected;
+    private Dictionary<string, string> _args = new(StringComparer.Ordinal);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            foreach (var cfg in ActiveServers)
+            {
+                try
+                {
+                    var client = await Pool.GetAsync(cfg);
+                    var prompts = await client.ListPromptsAsync();
+                    if (prompts.Count == 0) continue;
+                    _groups.Add(new PromptGroup(
+                        cfg.Name,
+                        prompts.Select(p => new PromptEntry(cfg, p)).ToList()));
+                }
+                catch (Exception ex)
+                {
+                    Snackbar.Add($"Falha listando prompts de '{cfg.Name}': {ex.Message}", Severity.Warning);
+                }
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Select(PromptEntry entry)
+    {
+        _selected = entry;
+        _args = new Dictionary<string, string>(StringComparer.Ordinal);
+    }
+
+    private void Back()
+    {
+        _selected = null;
+        _args.Clear();
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task Apply()
+    {
+        if (_selected is null) return;
+        _applying = true;
+        try
+        {
+            var protocolArgs = _selected.Prompt.ProtocolPrompt.Arguments
+                               ?? (IList<PromptArgument>)Array.Empty<PromptArgument>();
+            var missing = protocolArgs
+                .Where(a => a.Required == true &&
+                            string.IsNullOrWhiteSpace(_args.GetValueOrDefault(a.Name)))
+                .Select(a => a.Name)
+                .ToList();
+            if (missing.Count > 0)
+            {
+                Snackbar.Add(
+                    $"Preencha os campos obrigatorios: {string.Join(", ", missing)}",
+                    Severity.Warning);
+                return;
+            }
+
+            var args = _args
+                .Where(kv => !string.IsNullOrEmpty(kv.Value))
+                .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+
+            var result = await _selected.Prompt.GetAsync(args);
+            var text = ExtractText(result);
+            MudDialog.Close(DialogResult.Ok(text));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Erro ao renderizar prompt: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _applying = false;
+        }
+    }
+
+    private static string ExtractText(GetPromptResult result)
+    {
+        var sb = new StringBuilder();
+        foreach (var msg in result.Messages)
+        {
+            if (msg.Content is TextContentBlock t && !string.IsNullOrEmpty(t.Text))
+            {
+                if (sb.Length > 0) sb.AppendLine();
+                sb.Append(t.Text);
+            }
+        }
+        return sb.ToString();
+    }
+
+    private sealed record PromptGroup(string Server, List<PromptEntry> Prompts);
+    private sealed record PromptEntry(McpServerConfig Config, McpClientPrompt Prompt);
+}
