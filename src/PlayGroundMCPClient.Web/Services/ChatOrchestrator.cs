@@ -230,6 +230,12 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
         FunctionInvocationContext context,
         Func<FunctionInvocationContext, Task> next)
     {
+        // Coerce stringified primitives back to JSON-typed values BEFORE the call.
+        // The OpenAI/MCP plumbing has been observed to round-trip booleans through
+        // bool.ToString() ("True"/"False"), which then ships to the MCP server as
+        // a string and breaks any tool that expects a boolean.
+        NormalizeArguments(context.Arguments);
+
         var pluginName = context.Function.PluginName ?? "";
         var functionName = context.Function.Name;
         var args = SerializeArgs(context.Arguments);
@@ -252,6 +258,42 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
             await channel.Writer.WriteAsync(
                 new ToolCallCompletedEvent(pluginName, functionName, ex.Message, sw.Elapsed, true));
             throw;
+        }
+    }
+
+    private static void NormalizeArguments(KernelArguments args)
+    {
+        foreach (var key in args.Names.ToList())
+        {
+            var v = args[key];
+            var coerced = CoerceValue(v);
+            if (!ReferenceEquals(v, coerced))
+            {
+                args[key] = coerced;
+            }
+        }
+    }
+
+    private static object? CoerceValue(object? value)
+    {
+        switch (value)
+        {
+            case string s:
+                if (s == "True") return true;
+                if (s == "False") return false;
+                return s;
+            case JsonElement el:
+                return el.ValueKind switch
+                {
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.Null => null,
+                    JsonValueKind.Number => el.TryGetInt64(out var i) ? i : el.GetDouble(),
+                    JsonValueKind.String => el.GetString(),
+                    _ => value
+                };
+            default:
+                return value;
         }
     }
 
