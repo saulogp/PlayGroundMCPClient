@@ -5,6 +5,8 @@
 @inject LlmStore LlmStore
 @inject IDbContextFactory<PlaygroundDbContext> DbFactory
 @inject NavigationManager Nav
+@inject IDialogService Dialog
+@inject ISnackbar Snackbar
 @implements IDisposable
 
 <PageTitle>Chat - Playground MCP</PageTitle>
@@ -19,14 +21,23 @@
                 <MudDivider />
                 @foreach (var s in _sessions)
                 {
-                    <MudButton Variant="@(s.Id == _sessionId ? Variant.Filled : Variant.Text)"
-                               Color="@(s.Id == _sessionId ? Color.Primary : Color.Default)"
-                               OnClick="@(() => LoadSession(s.Id))"
-                               Class="justify-start">
-                        <MudStack Row AlignItems="AlignItems.Center">
-                            <MudText Typo="Typo.body2">@s.Title</MudText>
-                        </MudStack>
-                    </MudButton>
+                    var session = s;
+                    <MudStack Row Spacing="0" AlignItems="AlignItems.Center">
+                        <MudButton Variant="@(session.Id == _sessionId ? Variant.Filled : Variant.Text)"
+                                   Color="@(session.Id == _sessionId ? Color.Primary : Color.Default)"
+                                   OnClick="@(() => LoadSession(session.Id))"
+                                   Class="justify-start flex-grow-1"
+                                   Style="text-transform: none; min-width: 0;">
+                            <MudText Typo="Typo.body2"
+                                     Style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                @session.Title
+                            </MudText>
+                        </MudButton>
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       Size="Size.Small"
+                                       Color="Color.Default"
+                                       OnClick="@(() => DeleteSession(session))" />
+                    </MudStack>
                 }
             </MudStack>
         </MudPaper>
@@ -214,6 +225,25 @@
     }
 
     private void GoToSettings() => Nav.NavigateTo("/settings");
+
+    private async Task DeleteSession(ChatSession session)
+    {
+        var confirm = await Dialog.ShowMessageBoxAsync(
+            "Excluir conversa",
+            $"Remover '{session.Title}'? Esta acao nao pode ser desfeita.",
+            yesText: "Excluir", cancelText: "Cancelar");
+        if (confirm != true) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        await db.ChatSessions.Where(x => x.Id == session.Id).ExecuteDeleteAsync();
+
+        if (session.Id == _sessionId)
+        {
+            NewSession();
+        }
+        await ReloadSessionsAsync();
+        Snackbar.Add("Conversa removida", Severity.Info);
+    }
 
     public void Dispose()
     {
