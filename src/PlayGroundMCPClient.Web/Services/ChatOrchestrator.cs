@@ -18,7 +18,7 @@ namespace PlayGroundMCPClient.Web.Services;
 /// the given chat session, then streams tokens and tool-call events back to
 /// the UI through a channel.
 public sealed class ChatOrchestrator(
-    PlaygroundDbContext db,
+    IDbContextFactory<PlaygroundDbContext> dbFactory,
     McpClientPool pool,
     LlmStore llmStore,
     ILoggerFactory loggerFactory,
@@ -76,25 +76,37 @@ public sealed class ChatOrchestrator(
         Channel<ChatStreamEvent> channel,
         CancellationToken ct)
     {
-        var session = await db.ChatSessions
-            .Include(s => s.Messages.OrderBy(m => m.CreatedAt))
-            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
-
-        if (session is null)
+        // Phase 1: load (or create) session, persist user message, snapshot history.
+        // Use a short-lived context so the long LLM stream doesn't hold tracking state.
+        List<(ChatRole Role, string Content)> historySnapshot;
+        await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
-            session = new ChatSession { Id = sessionId, Title = Truncate(userMessage, 60) };
-            db.ChatSessions.Add(session);
+            var session = await db.ChatSessions
+                .Include(s => s.Messages.OrderBy(m => m.CreatedAt))
+                .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+
+            if (session is null)
+            {
+                session = new ChatSession { Id = sessionId, Title = Truncate(userMessage, 60) };
+                db.ChatSessions.Add(session);
+            }
+
+            session.Messages.Add(new ChatMessage
+            {
+                ChatSessionId = session.Id,
+                Role = ChatRole.User,
+                Content = userMessage
+            });
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+
+            historySnapshot = session.Messages
+                .OrderBy(m => m.CreatedAt)
+                .Select(m => (m.Role, m.Content))
+                .ToList();
         }
 
-        session.Messages.Add(new ChatMessage
-        {
-            ChatSessionId = session.Id,
-            Role = ChatRole.User,
-            Content = userMessage
-        });
-        session.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
-
+        // Phase 2: build kernel + run streaming chat completion (no DB context held).
         var builder = Kernel.CreateBuilder();
         builder.Services.AddSingleton<IFunctionInvocationFilter>(
             new ToolCallObserverFilter(channel));
@@ -137,13 +149,13 @@ public sealed class ChatOrchestrator(
 
         var chat = kernel.GetRequiredService<IChatCompletionService>();
         var history = new ChatHistory();
-        foreach (var m in session.Messages)
+        foreach (var (role, content) in historySnapshot)
         {
-            switch (m.Role)
+            switch (role)
             {
-                case ChatRole.User: history.AddUserMessage(m.Content); break;
-                case ChatRole.Assistant: history.AddAssistantMessage(m.Content); break;
-                case ChatRole.System: history.AddSystemMessage(m.Content); break;
+                case ChatRole.User: history.AddUserMessage(content); break;
+                case ChatRole.Assistant: history.AddAssistantMessage(content); break;
+                case ChatRole.System: history.AddSystemMessage(content); break;
             }
         }
 
@@ -162,15 +174,23 @@ public sealed class ChatOrchestrator(
             }
         }
 
+        // Phase 3: persist assistant message in a fresh context. Use ExecuteUpdate
+        // for the timestamp so we don't rely on tracking the session entity.
         var fullText = sb.ToString();
-        session.Messages.Add(new ChatMessage
+        await using (var db = await dbFactory.CreateDbContextAsync(CancellationToken.None))
         {
-            ChatSessionId = session.Id,
-            Role = ChatRole.Assistant,
-            Content = fullText
-        });
-        session.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(CancellationToken.None);
+            db.ChatMessages.Add(new ChatMessage
+            {
+                ChatSessionId = sessionId,
+                Role = ChatRole.Assistant,
+                Content = fullText
+            });
+            await db.ChatSessions
+                .Where(s => s.Id == sessionId)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow),
+                    CancellationToken.None);
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
 
         await channel.Writer.WriteAsync(new DoneEvent(fullText), CancellationToken.None);
     }

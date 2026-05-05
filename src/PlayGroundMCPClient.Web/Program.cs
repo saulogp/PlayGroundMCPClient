@@ -23,10 +23,6 @@ builder.Services.AddDbContextFactory<PlaygroundDbContext>(o =>
     o.UseSqlite(builder.Configuration.GetConnectionString("Playground")
         ?? "Data Source=playground.db"));
 
-// Scoped wrapper so each Blazor circuit gets a fresh DbContext per orchestrator.
-builder.Services.AddScoped(sp =>
-    sp.GetRequiredService<IDbContextFactory<PlaygroundDbContext>>().CreateDbContext());
-
 builder.Services.AddSingleton<ProtocolLogStore>();
 builder.Services.AddSingleton<McpServerRegistry>();
 builder.Services.AddSingleton<McpClientPool>();
