@@ -2,6 +2,9 @@
 @using System.Text.Json
 @inject McpServerRegistry Registry
 @inject McpClientPool Pool
+@inject TokenStore TokenStore
+@inject OAuthClient OAuthClient
+@inject OAuthState OAuthState
 @inject ISnackbar Snackbar
 @inject IDialogService Dialog
 @implements IDisposable
@@ -22,6 +25,7 @@
         <MudTh>Nome</MudTh>
         <MudTh>URL</MudTh>
         <MudTh>Origem</MudTh>
+        <MudTh>Auth</MudTh>
         <MudTh>Default</MudTh>
         <MudTh>Acoes</MudTh>
     </HeaderContent>
@@ -34,10 +38,23 @@
                 @context.Source
             </MudChip>
         </MudTd>
+        <MudTd>
+            @{
+                var (label, color) = AuthChip(context);
+            }
+            <MudChip T="string" Size="Size.Small" Color="@color">@label</MudChip>
+        </MudTd>
         <MudTd>@(context.EnabledByDefault ? "Sim" : "Nao")</MudTd>
         <MudTd>
             <MudButton Size="Size.Small" OnClick="@(() => InspectAsync(context))">Inspect</MudButton>
             <MudButton Size="Size.Small" OnClick="@(() => TestAsync(context))">Test</MudButton>
+            @if (context.AuthMode == McpAuthMode.OAuth)
+            {
+                <MudButton Size="Size.Small"
+                           OnClick="@(() => ReauthAsync(context))">Re-autenticar</MudButton>
+                <MudButton Size="Size.Small"
+                           OnClick="@(() => ClearTokensAsync(context))">Limpar tokens</MudButton>
+            }
             @if (context.Source == McpServerSource.Ui)
             {
                 <MudButton Size="Size.Small" Color="Color.Error"
@@ -54,12 +71,39 @@
     {
         _servers = Registry.GetAll();
         Registry.Changed += Reload;
+        TokenStore.TokenChanged += OnTokenChanged;
+        OAuthState.ReauthRequired += OnAuthStateChanged;
+        OAuthState.ReauthCleared += OnAuthStateChanged;
     }
 
     private void Reload()
     {
         _servers = Registry.GetAll();
         InvokeAsync(StateHasChanged);
+    }
+
+    private void OnTokenChanged(string _) => InvokeAsync(StateHasChanged);
+    private void OnAuthStateChanged(string _) => InvokeAsync(StateHasChanged);
+
+    private (string Label, Color Color) AuthChip(McpServerConfig cfg)
+    {
+        switch (cfg.AuthMode)
+        {
+            case McpAuthMode.None:
+                return ("Anonimo", Color.Default);
+            case McpAuthMode.BearerStatic:
+                return ("Bearer", Color.Info);
+            case McpAuthMode.OAuth:
+                if (OAuthState.RequiresReauth(cfg.Name))
+                    return ("OAuth - reauth", Color.Warning);
+                var token = TokenStore.Get(cfg.Name);
+                if (token is null) return ("OAuth - sem token", Color.Warning);
+                if (token.ExpiresAt is { } exp && exp < DateTimeOffset.UtcNow)
+                    return ("OAuth expirado", Color.Warning);
+                return ("OAuth OK", Color.Success);
+            default:
+                return (cfg.AuthMode.ToString(), Color.Default);
+        }
     }
 
     private async Task OpenAddDialog()
@@ -77,6 +121,7 @@
     {
         if (Registry.Remove(name))
         {
+            TokenStore.Remove(name);
             Snackbar.Add($"Server '{name}' removido", Severity.Info);
         }
     }
@@ -102,5 +147,35 @@
             new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true });
     }
 
-    public void Dispose() => Registry.Changed -= Reload;
+    private async Task ReauthAsync(McpServerConfig cfg)
+    {
+        try
+        {
+            var token = await OAuthClient.AuthorizeAsync(cfg);
+            TokenStore.Save(cfg.Name, token);
+            OAuthState.ClearRequiresReauth(cfg.Name);
+            await Pool.InvalidateOneAsync(cfg.Name);
+            Snackbar.Add($"'{cfg.Name}' autenticado", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Falha OAuth: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ClearTokensAsync(McpServerConfig cfg)
+    {
+        TokenStore.Remove(cfg.Name);
+        OAuthState.ClearRequiresReauth(cfg.Name);
+        await Pool.InvalidateOneAsync(cfg.Name);
+        Snackbar.Add($"Tokens de '{cfg.Name}' removidos", Severity.Info);
+    }
+
+    public void Dispose()
+    {
+        Registry.Changed -= Reload;
+        TokenStore.TokenChanged -= OnTokenChanged;
+        OAuthState.ReauthRequired -= OnAuthStateChanged;
+        OAuthState.ReauthCleared -= OnAuthStateChanged;
+    }
 }

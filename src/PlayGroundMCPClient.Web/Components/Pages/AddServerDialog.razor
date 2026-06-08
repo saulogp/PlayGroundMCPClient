@@ -1,4 +1,7 @@
 @namespace PlayGroundMCPClient.Web.Components.Pages
+@inject OAuthClient OAuthClient
+@inject TokenStore TokenStore
+@inject ISnackbar Snackbar
 
 <MudDialog>
     <DialogContent>
@@ -7,18 +10,68 @@
             <MudTextField @bind-Value="_url" Label="URL StreamableHTTP" Required="true"
                           HelperText="Ex.: http://localhost:5050/mcp" />
             <MudCheckBox T="bool" @bind-Value="_enabled" Label="Habilitar por padrao em novos chats" />
-            <MudText Typo="Typo.subtitle2" Class="mt-2">Headers (opcional)</MudText>
-            @foreach (var h in _headers)
+
+            <MudSelect T="McpAuthMode" @bind-Value="_authMode" Label="Autenticacao" Dense="true">
+                <MudSelectItem Value="McpAuthMode.None">Anonimo</MudSelectItem>
+                <MudSelectItem Value="McpAuthMode.BearerStatic">Bearer estatico (header fixo)</MudSelectItem>
+                <MudSelectItem Value="McpAuthMode.OAuth">OAuth 2.1 + PKCE</MudSelectItem>
+            </MudSelect>
+
+            @if (_authMode == McpAuthMode.OAuth)
             {
-                <MudStack Row Spacing="1">
-                    <MudTextField @bind-Value="h.Key" Label="Key" />
-                    <MudTextField @bind-Value="h.Value" Label="Value" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Delete"
-                                   OnClick="@(() => _headers.Remove(h))" Size="Size.Small" />
-                </MudStack>
+                <MudPaper Class="pa-3" Outlined="true">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.subtitle2">OAuth</MudText>
+                        <MudTextField @bind-Value="_oauth.ClientId" Label="Client ID (deixe vazio para DCR)" />
+                        <MudTextField @bind-Value="_oauth.ClientSecret" Label="Client Secret (opcional)"
+                                      InputType="InputType.Password" />
+                        <MudTextField @bind-Value="_oauth.Scopes" Label="Scopes (separados por espaco)" />
+                        <MudTextField @bind-Value="_oauth.Audience" Label="Audience / resource (opcional)" />
+                        <MudCheckBox T="bool" @bind-Value="_oauth.UseDynamicClientRegistration"
+                                     Label="Tentar Dynamic Client Registration (RFC 7591)" />
+                        <MudExpansionPanels Elevation="0">
+                            <MudExpansionPanel Text="Endpoints (opcional - discovery preenche)">
+                                <MudTextField @bind-Value="_oauth.AuthorizationEndpoint" Label="Authorization endpoint" />
+                                <MudTextField @bind-Value="_oauth.TokenEndpoint" Label="Token endpoint" />
+                                <MudTextField @bind-Value="_oauth.RegistrationEndpoint" Label="Registration endpoint" />
+                                <MudTextField @bind-Value="_oauth.RedirectUri" Label="Redirect URI"
+                                              HelperText="Deixe '127.0.0.1:0/oauth/callback' para porta efemera" />
+                            </MudExpansionPanel>
+                        </MudExpansionPanels>
+                        <MudStack Row AlignItems="AlignItems.Center" Spacing="1">
+                            <MudButton Color="Color.Primary" Variant="Variant.Outlined"
+                                       Disabled="@_authenticating"
+                                       OnClick="AuthenticateAsync">
+                                @(_authenticated ? "Re-autenticar" : "Autenticar agora")
+                            </MudButton>
+                            @if (_authenticating)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                            }
+                            @if (_authenticated)
+                            {
+                                <MudChip T="string" Color="Color.Success" Size="Size.Small">Autenticado</MudChip>
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
             }
-            <MudButton Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
-                       OnClick="@(() => _headers.Add(new HeaderEntry()))">Add header</MudButton>
+
+            @if (_authMode != McpAuthMode.OAuth)
+            {
+                <MudText Typo="Typo.subtitle2" Class="mt-2">Headers (opcional)</MudText>
+                @foreach (var h in _headers)
+                {
+                    <MudStack Row Spacing="1">
+                        <MudTextField @bind-Value="h.Key" Label="Key" />
+                        <MudTextField @bind-Value="h.Value" Label="Value" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       OnClick="@(() => _headers.Remove(h))" Size="Size.Small" />
+                    </MudStack>
+                }
+                <MudButton Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="@(() => _headers.Add(new HeaderEntry()))">Add header</MudButton>
+            }
         </MudStack>
     </DialogContent>
     <DialogActions>
@@ -33,24 +86,60 @@
     private string _name = "";
     private string _url = "";
     private bool _enabled;
+    private McpAuthMode _authMode = McpAuthMode.None;
+    private McpOAuthConfig _oauth = new();
     private List<HeaderEntry> _headers = new();
+    private bool _authenticating;
+    private bool _authenticated;
 
     private void Cancel() => MudDialog.Cancel();
+
+    private async Task AuthenticateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_url))
+        {
+            Snackbar.Add("Preencha Nome e URL antes de autenticar", Severity.Warning);
+            return;
+        }
+        _authenticating = true;
+        try
+        {
+            var server = BuildConfig();
+            var token = await OAuthClient.AuthorizeAsync(server);
+            TokenStore.Save(server.Name, token);
+            _oauth = server.OAuth ?? _oauth;
+            _authenticated = true;
+            Snackbar.Add("Autenticado com sucesso", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Falha OAuth: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _authenticating = false;
+        }
+    }
 
     private void Submit()
     {
         if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_url)) return;
-        var cfg = new McpServerConfig
-        {
-            Name = _name.Trim(),
-            Url = _url.Trim(),
-            EnabledByDefault = _enabled,
-            Headers = _headers
+        MudDialog.Close(DialogResult.Ok(BuildConfig()));
+    }
+
+    private McpServerConfig BuildConfig() => new()
+    {
+        Name = _name.Trim(),
+        Url = _url.Trim(),
+        EnabledByDefault = _enabled,
+        AuthMode = _authMode,
+        OAuth = _authMode == McpAuthMode.OAuth ? _oauth : null,
+        Headers = _authMode == McpAuthMode.OAuth
+            ? new Dictionary<string, string>()
+            : _headers
                 .Where(h => !string.IsNullOrWhiteSpace(h.Key))
                 .ToDictionary(h => h.Key.Trim(), h => h.Value ?? "")
-        };
-        MudDialog.Close(DialogResult.Ok(cfg));
-    }
+    };
 
     private sealed class HeaderEntry
     {

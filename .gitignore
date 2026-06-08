@@ -8,6 +8,7 @@ obj/
 *.db-wal
 *.db-shm
 mcp-servers.user.json
+mcp-tokens.json
 llm.user.json
 azure-openai.user.json
 appsettings.Development.json

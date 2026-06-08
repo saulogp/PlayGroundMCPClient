@@ -4,6 +4,7 @@ using PlayGroundMCPClient.Web.Components;
 using PlayGroundMCPClient.Web.Data;
 using PlayGroundMCPClient.Web.Models;
 using PlayGroundMCPClient.Web.Services;
+using PlayGroundMCPClient.Web.Services.OAuth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +26,11 @@ builder.Services.AddDbContextFactory<PlaygroundDbContext>(o =>
 
 builder.Services.AddSingleton<ProtocolLogStore>();
 builder.Services.AddSingleton<McpServerRegistry>();
+builder.Services.AddSingleton<TokenStore>();
+builder.Services.AddSingleton<OAuthState>();
+builder.Services.AddHttpClient("oauth-discovery");
+builder.Services.AddSingleton<OAuthMetadataDiscovery>();
+builder.Services.AddSingleton<OAuthClient>();
 builder.Services.AddSingleton<McpClientPool>();
 builder.Services.AddSingleton<LlmStore>();
 builder.Services.AddSingleton<PersonalityRegistry>();

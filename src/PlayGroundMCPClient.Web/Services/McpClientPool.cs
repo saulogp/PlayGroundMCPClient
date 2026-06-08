@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using ModelContextProtocol.Client;
 using PlayGroundMCPClient.Web.Models;
+using PlayGroundMCPClient.Web.Services.OAuth;
 
 namespace PlayGroundMCPClient.Web.Services;
 
@@ -11,27 +12,73 @@ public sealed class McpClientPool : IAsyncDisposable
     private readonly McpServerRegistry _registry;
     private readonly ProtocolLogStore _logStore;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly TokenStore _tokenStore;
+    private readonly OAuthClient _oauthClient;
+    private readonly OAuthState _oauthState;
     private readonly ConcurrentDictionary<string, Lazy<Task<McpClient>>> _clients = new(StringComparer.OrdinalIgnoreCase);
 
-    public McpClientPool(McpServerRegistry registry, ProtocolLogStore logStore, ILoggerFactory loggerFactory)
+    public McpClientPool(
+        McpServerRegistry registry,
+        ProtocolLogStore logStore,
+        ILoggerFactory loggerFactory,
+        TokenStore tokenStore,
+        OAuthClient oauthClient,
+        OAuthState oauthState)
     {
         _registry = registry;
         _logStore = logStore;
         _loggerFactory = loggerFactory;
+        _tokenStore = tokenStore;
+        _oauthClient = oauthClient;
+        _oauthState = oauthState;
         _registry.Changed += InvalidateAll;
     }
 
     public Task<McpClient> GetAsync(McpServerConfig config) =>
         _clients.GetOrAdd(config.Name, _ => new Lazy<Task<McpClient>>(() => CreateAsync(config))).Value;
 
+    public async Task InvalidateOneAsync(string serverName)
+    {
+        if (!_clients.TryRemove(serverName, out var lazy)) return;
+        if (!lazy.IsValueCreated) return;
+        try
+        {
+            var client = await lazy.Value;
+            await client.DisposeAsync();
+        }
+        catch
+        {
+            // best effort
+        }
+    }
+
     private async Task<McpClient> CreateAsync(McpServerConfig config)
     {
-        var http = new HttpClient(new McpLoggingHandler(_logStore, config.Name)
+        HttpMessageHandler chain = new HttpClientHandler();
+        chain = new McpLoggingHandler(_logStore, config.Name) { InnerHandler = chain };
+
+        if (config.AuthMode == McpAuthMode.OAuth)
         {
-            InnerHandler = new HttpClientHandler()
-        });
+            chain = new OAuthDelegatingHandler(
+                config,
+                _tokenStore,
+                _oauthClient,
+                _oauthState,
+                _loggerFactory.CreateLogger<OAuthDelegatingHandler>())
+            {
+                InnerHandler = chain
+            };
+        }
+
+        var http = new HttpClient(chain);
+
         foreach (var (k, v) in config.Headers)
         {
+            if (config.AuthMode == McpAuthMode.OAuth &&
+                string.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
             http.DefaultRequestHeaders.TryAddWithoutValidation(k, v);
         }
 
