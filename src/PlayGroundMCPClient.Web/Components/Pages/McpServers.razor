@@ -5,6 +5,7 @@
 @inject TokenStore TokenStore
 @inject OAuthClient OAuthClient
 @inject OAuthState OAuthState
+@inject NavigationManager Nav
 @inject ISnackbar Snackbar
 @inject IDialogService Dialog
 @implements IDisposable
@@ -54,6 +55,12 @@
                            OnClick="@(() => ReauthAsync(context))">Re-autenticar</MudButton>
                 <MudButton Size="Size.Small"
                            OnClick="@(() => ClearTokensAsync(context))">Limpar tokens</MudButton>
+                @if (_reauthName == context.Name && _reauthUrl is not null)
+                {
+                    <MudButton Size="Size.Small" Href="@_reauthUrl" Target="_blank"
+                               Color="Color.Primary" Variant="Variant.Filled"
+                               StartIcon="@Icons.Material.Filled.OpenInNew">Abrir login</MudButton>
+                }
             }
             @if (context.Source == McpServerSource.Ui)
             {
@@ -66,6 +73,8 @@
 
 @code {
     private IReadOnlyList<McpServerConfig> _servers = Array.Empty<McpServerConfig>();
+    private string? _reauthUrl;
+    private string? _reauthName;
 
     protected override void OnInitialized()
     {
@@ -82,7 +91,26 @@
         InvokeAsync(StateHasChanged);
     }
 
-    private void OnTokenChanged(string _) => InvokeAsync(StateHasChanged);
+    private void OnTokenChanged(string name)
+    {
+        // Only the server the user just re-authenticated needs its pooled client
+        // rebuilt; background token refreshes also save tokens but must not
+        // invalidate live connections.
+        if (string.Equals(name, _reauthName, StringComparison.OrdinalIgnoreCase))
+        {
+            _reauthUrl = null;
+            _reauthName = null;
+            InvokeAsync(async () =>
+            {
+                OAuthState.ClearRequiresReauth(name);
+                await Pool.InvalidateOneAsync(name);
+                StateHasChanged();
+            });
+            return;
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
     private void OnAuthStateChanged(string _) => InvokeAsync(StateHasChanged);
 
     private (string Label, Color Color) AuthChip(McpServerConfig cfg)
@@ -149,13 +177,16 @@
 
     private async Task ReauthAsync(McpServerConfig cfg)
     {
+        _reauthUrl = null;
+        _reauthName = null;
         try
         {
-            var token = await OAuthClient.AuthorizeAsync(cfg);
-            TokenStore.Save(cfg.Name, token);
-            OAuthState.ClearRequiresReauth(cfg.Name);
-            await Pool.InvalidateOneAsync(cfg.Name);
-            Snackbar.Add($"'{cfg.Name}' autenticado", Severity.Success);
+            var redirectUri = string.IsNullOrWhiteSpace(cfg.OAuth?.RedirectUri)
+                ? new Uri(new Uri(Nav.BaseUri), "oauth/callback").ToString()
+                : cfg.OAuth!.RedirectUri;
+            _reauthUrl = await OAuthClient.PrepareAuthorizationAsync(cfg, redirectUri);
+            _reauthName = cfg.Name;
+            Snackbar.Add("Abra a página de login para concluir", Severity.Info);
         }
         catch (Exception ex)
         {

@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -7,58 +5,85 @@ using PlayGroundMCPClient.Web.Models;
 
 namespace PlayGroundMCPClient.Web.Services.OAuth;
 
-/// Drives the Authorization Code + PKCE flow:
+/// Drives the Authorization Code + PKCE flow in a web-native way (works both
+/// locally and inside a container, where the app and the browser are on
+/// different machines):
 /// - (optional) Dynamic Client Registration
-/// - Opens the system browser
-/// - Listens on 127.0.0.1:<ephemeral> for the redirect
-/// - Exchanges the code for tokens
-/// - Refreshes tokens
+/// - PrepareAuthorizationAsync builds the authorization URL using this app's
+///   own /oauth/callback as redirect_uri, and parks the PKCE state server-side.
+/// - The user's own browser opens that URL; the provider redirects back to
+///   /oauth/callback, which calls CompleteAuthorizationAsync to swap the code
+///   for tokens.
+/// - Refreshes tokens.
 public sealed class OAuthClient
 {
     private readonly IHttpClientFactory _httpFactory;
     private readonly OAuthMetadataDiscovery _discovery;
+    private readonly PendingAuthorizationStore _pending;
     private readonly ILogger<OAuthClient> _logger;
 
-    public OAuthClient(IHttpClientFactory httpFactory, OAuthMetadataDiscovery discovery, ILogger<OAuthClient> logger)
+    public OAuthClient(
+        IHttpClientFactory httpFactory,
+        OAuthMetadataDiscovery discovery,
+        PendingAuthorizationStore pending,
+        ILogger<OAuthClient> logger)
     {
         _httpFactory = httpFactory;
         _discovery = discovery;
+        _pending = pending;
         _logger = logger;
     }
 
-    public async Task<OAuthToken> AuthorizeAsync(McpServerConfig server, CancellationToken ct = default)
+    /// Resolves endpoints + client credentials, generates PKCE/state, parks the
+    /// pending authorization keyed by state, and returns the authorization URL
+    /// the user's browser should open. `redirectUri` must point back at this
+    /// app's /oauth/callback and be reachable from the browser.
+    public async Task<string> PrepareAuthorizationAsync(McpServerConfig server, string redirectUri, CancellationToken ct = default)
     {
         await _discovery.EnsureEndpointsAsync(server, ct);
         var oauth = server.OAuth ?? throw new InvalidOperationException("OAuth config ausente");
 
         var http = _httpFactory.CreateClient("oauth-discovery");
+        await EnsureClientCredentialsAsync(http, server, redirectUri, ct);
 
-        var (listener, redirectUri) = StartLoopbackListener(oauth.RedirectUri);
-        try
+        var verifier = GenerateCodeVerifier();
+        var challenge = ComputeS256Challenge(verifier);
+        var state = RandomBase64Url(16);
+
+        var authUrl = BuildAuthorizationUrl(oauth, redirectUri, challenge, state);
+
+        _pending.Add(new PendingAuthorization
         {
-            await EnsureClientCredentialsAsync(http, server, redirectUri, ct);
+            State = state,
+            ServerName = server.Name,
+            CodeVerifier = verifier,
+            RedirectUri = redirectUri,
+            OAuth = CloneOAuth(oauth)
+        });
 
-            var verifier = GenerateCodeVerifier();
-            var challenge = ComputeS256Challenge(verifier);
-            var state = RandomBase64Url(16);
+        return authUrl;
+    }
 
-            var authUrl = BuildAuthorizationUrl(oauth, redirectUri, challenge, state);
-            OpenBrowser(authUrl);
+    /// Completes the flow from the /oauth/callback endpoint: matches the pending
+    /// authorization by state, validates, and exchanges the code for tokens.
+    public async Task<(string ServerName, OAuthToken Token)> CompleteAuthorizationAsync(
+        string state, string? code, string? error, string? errorDescription, CancellationToken ct = default)
+    {
+        var pending = _pending.Consume(state)
+            ?? throw new OAuthException("OAuth state inválido ou expirado", "");
 
-            var (code, returnedState) = await WaitForCallbackAsync(listener, ct);
-            if (!string.Equals(state, returnedState, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("OAuth state mismatch (possível CSRF)");
-            }
-
-            var token = await ExchangeCodeAsync(http, oauth, code, redirectUri, verifier, ct);
-            return token;
-        }
-        finally
+        if (!string.IsNullOrWhiteSpace(error))
         {
-            try { listener.Stop(); } catch { }
-            try { listener.Close(); } catch { }
+            throw new OAuthException($"OAuth error: {error} - {errorDescription}", error);
         }
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new OAuthException("OAuth callback sem 'code'", "");
+        }
+
+        var http = _httpFactory.CreateClient("oauth-discovery");
+        var token = await ExchangeCodeAsync(http, pending.OAuth, code!, pending.RedirectUri, pending.CodeVerifier, ct);
+        return (pending.ServerName, token);
     }
 
     public async Task<OAuthToken> RefreshAsync(McpServerConfig server, OAuthToken current, CancellationToken ct = default)
@@ -126,7 +151,7 @@ public sealed class OAuthClient
             grant_types = new[] { "authorization_code", "refresh_token" },
             response_types = new[] { "code" },
             token_endpoint_auth_method = "none",
-            application_type = "native",
+            application_type = "web",
             scope = oauth.Scopes
         };
 
@@ -148,61 +173,6 @@ public sealed class OAuthClient
         {
             throw new OAuthException("DCR não retornou client_id", json);
         }
-    }
-
-    private static (HttpListener Listener, string RedirectUri) StartLoopbackListener(string configured)
-    {
-        var configuredUri = new Uri(configured);
-        var path = string.IsNullOrEmpty(configuredUri.AbsolutePath) ? "/oauth/callback" : configuredUri.AbsolutePath;
-        if (!path.EndsWith('/')) path += "/";
-
-        var port = configuredUri.Port > 0 ? configuredUri.Port : GetEphemeralPort();
-        var listener = new HttpListener();
-        listener.Prefixes.Add($"http://127.0.0.1:{port}{path}");
-        listener.Start();
-
-        var pathNoSlash = path.TrimEnd('/');
-        return (listener, $"http://127.0.0.1:{port}{pathNoSlash}");
-    }
-
-    private static int GetEphemeralPort()
-    {
-        var l = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        var port = ((IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        return port;
-    }
-
-    private async Task<(string Code, string? State)> WaitForCallbackAsync(HttpListener listener, CancellationToken ct)
-    {
-        using var reg = ct.Register(() => { try { listener.Stop(); } catch { } });
-        var ctx = await listener.GetContextAsync();
-        var query = ctx.Request.Url?.Query ?? "";
-        var parsed = System.Web.HttpUtility.ParseQueryString(query);
-        var code = parsed["code"];
-        var state = parsed["state"];
-        var error = parsed["error"];
-
-        var html = error is null
-            ? "<html><body><h2>Autenticado.</h2><p>Pode fechar esta aba.</p></body></html>"
-            : $"<html><body><h2>Falha</h2><pre>{WebUtility.HtmlEncode(error)}: {WebUtility.HtmlEncode(parsed["error_description"] ?? "")}</pre></body></html>";
-
-        var buf = Encoding.UTF8.GetBytes(html);
-        ctx.Response.ContentType = "text/html; charset=utf-8";
-        ctx.Response.ContentLength64 = buf.Length;
-        await ctx.Response.OutputStream.WriteAsync(buf, ct);
-        ctx.Response.OutputStream.Close();
-
-        if (error is not null)
-        {
-            throw new OAuthException($"OAuth error: {error} - {parsed["error_description"]}", error);
-        }
-        if (string.IsNullOrWhiteSpace(code))
-        {
-            throw new OAuthException("OAuth callback sem 'code'", "");
-        }
-        return (code!, state);
     }
 
     private async Task<OAuthToken> ExchangeCodeAsync(HttpClient http, McpOAuthConfig oauth, string code, string redirectUri, string verifier, CancellationToken ct)
@@ -277,17 +247,18 @@ public sealed class OAuthClient
         return $"{oauth.AuthorizationEndpoint}{sep}{q}";
     }
 
-    private static void OpenBrowser(string url)
+    private static McpOAuthConfig CloneOAuth(McpOAuthConfig o) => new()
     {
-        try
-        {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        }
-        catch
-        {
-            // best effort
-        }
-    }
+        AuthorizationEndpoint = o.AuthorizationEndpoint,
+        TokenEndpoint = o.TokenEndpoint,
+        RegistrationEndpoint = o.RegistrationEndpoint,
+        ClientId = o.ClientId,
+        ClientSecret = o.ClientSecret,
+        Scopes = o.Scopes,
+        Audience = o.Audience,
+        RedirectUri = o.RedirectUri,
+        UseDynamicClientRegistration = o.UseDynamicClientRegistration
+    };
 
     private static string GenerateCodeVerifier()
     {

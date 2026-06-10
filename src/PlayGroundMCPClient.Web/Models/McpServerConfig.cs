@@ -22,7 +22,9 @@ public sealed class McpOAuthConfig
     public string? ClientSecret { get; set; }
     public string Scopes { get; set; } = "";
     public string? Audience { get; set; }
-    public string RedirectUri { get; set; } = "http://127.0.0.1:0/oauth/callback";
+    /// Empty = derive "{appBaseUrl}/oauth/callback" from the browser's address.
+    /// Set explicitly only to override (must point back at this app's callback).
+    public string RedirectUri { get; set; } = "";
     public bool UseDynamicClientRegistration { get; set; } = true;
 }
 

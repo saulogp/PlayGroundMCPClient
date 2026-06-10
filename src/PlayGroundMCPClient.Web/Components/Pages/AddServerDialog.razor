@@ -1,6 +1,8 @@
 @namespace PlayGroundMCPClient.Web.Components.Pages
+@implements IDisposable
 @inject OAuthClient OAuthClient
 @inject TokenStore TokenStore
+@inject NavigationManager Nav
 @inject ISnackbar Snackbar
 
 <MudDialog>
@@ -35,14 +37,16 @@
                                 <MudTextField @bind-Value="_oauth.TokenEndpoint" Label="Token endpoint" />
                                 <MudTextField @bind-Value="_oauth.RegistrationEndpoint" Label="Registration endpoint" />
                                 <MudTextField @bind-Value="_oauth.RedirectUri" Label="Redirect URI"
-                                              HelperText="Deixe '127.0.0.1:0/oauth/callback' para porta efemera" />
+                                              HelperText="Deixe vazio para usar {url-da-app}/oauth/callback automaticamente" />
                             </MudExpansionPanel>
                         </MudExpansionPanels>
                         <MudStack Row AlignItems="AlignItems.Center" Spacing="1">
                             <MudButton Color="Color.Primary" Variant="Variant.Outlined"
                                        Disabled="@_authenticating"
                                        OnClick="AuthenticateAsync">
-                                @(_authenticated ? "Re-autenticar" : "Autenticar agora")
+                                @(_authenticated ? "Re-autenticar"
+                                    : _awaitingCallback ? "Recomeçar"
+                                    : "Autenticar agora")
                             </MudButton>
                             @if (_authenticating)
                             {
@@ -53,6 +57,18 @@
                                 <MudChip T="string" Color="Color.Success" Size="Size.Small">Autenticado</MudChip>
                             }
                         </MudStack>
+                        @if (_awaitingCallback && _authUrl is not null)
+                        {
+                            <MudButton Href="@_authUrl" Target="_blank"
+                                       Color="Color.Primary" Variant="Variant.Filled"
+                                       StartIcon="@Icons.Material.Filled.OpenInNew">
+                                Abrir página de login (nova aba)
+                            </MudButton>
+                            <MudStack Row AlignItems="AlignItems.Center" Spacing="1">
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                <MudText Typo="Typo.caption">Aguardando login na outra aba...</MudText>
+                            </MudStack>
+                        }
                     </MudStack>
                 </MudPaper>
             }
@@ -91,6 +107,13 @@
     private List<HeaderEntry> _headers = new();
     private bool _authenticating;
     private bool _authenticated;
+    private bool _awaitingCallback;
+    private string? _authUrl;
+    private string? _pendingServerName;
+
+    protected override void OnInitialized() => TokenStore.TokenChanged += OnTokenChanged;
+
+    public void Dispose() => TokenStore.TokenChanged -= OnTokenChanged;
 
     private void Cancel() => MudDialog.Cancel();
 
@@ -102,14 +125,19 @@
             return;
         }
         _authenticating = true;
+        _awaitingCallback = false;
+        _authUrl = null;
         try
         {
             var server = BuildConfig();
-            var token = await OAuthClient.AuthorizeAsync(server);
-            TokenStore.Save(server.Name, token);
+            var redirectUri = string.IsNullOrWhiteSpace(_oauth.RedirectUri)
+                ? new Uri(new Uri(Nav.BaseUri), "oauth/callback").ToString()
+                : _oauth.RedirectUri;
+            _authUrl = await OAuthClient.PrepareAuthorizationAsync(server, redirectUri);
             _oauth = server.OAuth ?? _oauth;
-            _authenticated = true;
-            Snackbar.Add("Autenticado com sucesso", Severity.Success);
+            _pendingServerName = server.Name;
+            _awaitingCallback = true;
+            Snackbar.Add("Abra a página de login para continuar", Severity.Info);
         }
         catch (Exception ex)
         {
@@ -119,6 +147,23 @@
         {
             _authenticating = false;
         }
+    }
+
+    private void OnTokenChanged(string serverName)
+    {
+        if (!_awaitingCallback ||
+            !string.Equals(serverName, _pendingServerName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        _awaitingCallback = false;
+        _authenticated = true;
+        _authUrl = null;
+        InvokeAsync(() =>
+        {
+            Snackbar.Add("Autenticado com sucesso", Severity.Success);
+            StateHasChanged();
+        });
     }
 
     private void Submit()
