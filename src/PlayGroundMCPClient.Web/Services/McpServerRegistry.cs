@@ -33,7 +33,9 @@ public sealed class McpServerRegistry
                 Url = s.Url,
                 Headers = new Dictionary<string, string>(s.Headers),
                 EnabledByDefault = s.EnabledByDefault,
-                Source = McpServerSource.File
+                Source = McpServerSource.File,
+                AuthMode = s.AuthMode,
+                OAuth = s.OAuth
             });
 
         return fromFile.Concat(_userServers.Values).ToList();
@@ -50,7 +52,9 @@ public sealed class McpServerRegistry
             Url = config.Url,
             Headers = config.Headers,
             EnabledByDefault = config.EnabledByDefault,
-            Source = McpServerSource.Ui
+            Source = McpServerSource.Ui,
+            AuthMode = config.AuthMode,
+            OAuth = config.OAuth
         };
         _userServers[config.Name] = withSource;
         PersistUserFile();
@@ -84,7 +88,9 @@ public sealed class McpServerRegistry
                     Url = s.Url,
                     Headers = new Dictionary<string, string>(s.Headers),
                     EnabledByDefault = s.EnabledByDefault,
-                    Source = McpServerSource.Ui
+                    Source = McpServerSource.Ui,
+                    AuthMode = s.AuthMode,
+                    OAuth = s.OAuth
                 };
             }
         }

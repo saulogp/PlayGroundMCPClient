@@ -156,7 +156,20 @@ public sealed class ChatOrchestrator(
                 var tools = await client.ListToolsAsync(cancellationToken: ct);
                 if (tools.Count == 0) continue;
 
-                var kernelFunctions = tools.Select(t => t.AsKernelFunction()).ToList();
+                // Some MCP servers expose tool names with characters that the
+                // OpenAI/Semantic Kernel function-name grammar rejects (only ASCII
+                // letters, digits and underscores are allowed), e.g. Backstage's
+                // 'techdocs-plugin.techdocs-search'. Rename the model-facing tool to a
+                // sanitized form; WithName keeps the original name for the actual MCP
+                // call, so no server-side mapping is needed. Dedupe to avoid clashes
+                // when two raw names collapse to the same sanitized name.
+                var usedNames = new HashSet<string>(StringComparer.Ordinal);
+                var kernelFunctions = tools.Select(t =>
+                {
+                    var safeName = SanitizeToolName(t.Name, usedNames);
+                    var tool = safeName == t.Name ? t : t.WithName(safeName);
+                    return tool.AsKernelFunction();
+                }).ToList();
                 kernel.Plugins.AddFromFunctions(SanitizePluginName(cfg.Name), kernelFunctions);
             }
             catch (Exception ex)
@@ -218,6 +231,23 @@ public sealed class ChatOrchestrator(
     {
         var clean = Regex.Replace(name, "[^a-zA-Z0-9_]", "_");
         return string.IsNullOrEmpty(clean) ? "mcp" : clean;
+    }
+
+    // Maps a raw MCP tool name onto the OpenAI/SK function-name grammar
+    // (ASCII letters, digits and underscores only) and guarantees uniqueness
+    // within the plugin so AddFromFunctions doesn't fail on a duplicate.
+    private static string SanitizeToolName(string name, HashSet<string> used)
+    {
+        var clean = Regex.Replace(name, "[^a-zA-Z0-9_]", "_");
+        if (string.IsNullOrEmpty(clean)) clean = "tool";
+
+        var candidate = clean;
+        var i = 1;
+        while (!used.Add(candidate))
+        {
+            candidate = $"{clean}_{i++}";
+        }
+        return candidate;
     }
 
     private static string Truncate(string s, int max) =>

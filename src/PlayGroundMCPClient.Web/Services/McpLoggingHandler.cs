@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PlayGroundMCPClient.Web.Models;
 
 namespace PlayGroundMCPClient.Web.Services;
@@ -9,6 +10,9 @@ namespace PlayGroundMCPClient.Web.Services;
 /// not consume here.
 public sealed class McpLoggingHandler(ProtocolLogStore store, string serverName) : DelegatingHandler
 {
+    private static readonly string[] RedactedJsonKeys =
+        ["access_token", "refresh_token", "id_token", "client_secret", "code_verifier"];
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
@@ -24,7 +28,7 @@ public sealed class McpLoggingHandler(ProtocolLogStore store, string serverName)
                     serverName,
                     FrameDirection.Outbound,
                     method,
-                    Pretty(body)));
+                    Pretty(Redact(body))));
             }
             catch
             {
@@ -47,7 +51,7 @@ public sealed class McpLoggingHandler(ProtocolLogStore store, string serverName)
                     serverName,
                     FrameDirection.Inbound,
                     null,
-                    Pretty(body)));
+                    Pretty(Redact(body))));
 
                 // Re-create content so downstream consumers can read it again.
                 var newContent = new StringContent(body);
@@ -99,5 +103,17 @@ public sealed class McpLoggingHandler(ProtocolLogStore store, string serverName)
         {
             return json;
         }
+    }
+
+    private static string Redact(string body)
+    {
+        if (string.IsNullOrEmpty(body)) return body;
+        var redacted = body;
+        foreach (var key in RedactedJsonKeys)
+        {
+            var pattern = $"\"{Regex.Escape(key)}\"\\s*:\\s*\"[^\"]*\"";
+            redacted = Regex.Replace(redacted, pattern, $"\"{key}\":\"<redacted>\"", RegexOptions.IgnoreCase);
+        }
+        return redacted;
     }
 }
