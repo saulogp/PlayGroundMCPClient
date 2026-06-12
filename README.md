@@ -48,3 +48,9 @@ docker run -d -p 8080:8080 \
 - `src/PlayGroundMCPClient.Web/Services/McpLoggingHandler.cs` — captura JSON-RPC para o Protocol Log.
 - `src/PlayGroundMCPClient.Web/Services/LlmStore.cs` — singleton com Model/ApiKey, persiste em llm.user.json.
 - `src/PlayGroundMCPClient.Web/mcp-servers.json` — config versionavel de MCPs.
+
+## Licença
+
+Distribuído sob a [PolyForm Noncommercial License 1.0.0](LICENSE) — uso, cópia e modificação permitidos **apenas para fins não comerciais**.
+
+Required Notice: Copyright 2026 Saulo Proetti (sauloproetti@gmail.com)
