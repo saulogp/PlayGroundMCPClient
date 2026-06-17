@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
@@ -260,11 +262,13 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
         FunctionInvocationContext context,
         Func<FunctionInvocationContext, Task> next)
     {
-        // Coerce stringified primitives back to JSON-typed values BEFORE the call.
-        // The OpenAI/MCP plumbing has been observed to round-trip booleans through
-        // bool.ToString() ("True"/"False"), which then ships to the MCP server as
-        // a string and breaks any tool that expects a boolean.
-        NormalizeArguments(context.Arguments);
+        // Coerce stringified arguments back to JSON-typed values BEFORE the call.
+        // Some models (and the OpenAI/MCP plumbing) emit every tool argument as a
+        // string — e.g. limit "1" instead of 1, or filter "{\"Priority\":3}" instead
+        // of an object — which then fails the server's JSON-schema validation. We use
+        // each parameter's declared schema type (from the MCP tool's inputSchema) to
+        // convert strings into the expected number/integer/boolean/object/array.
+        NormalizeArguments(context.Arguments, context.Function.Metadata);
 
         var pluginName = context.Function.PluginName ?? "";
         var functionName = context.Function.Name;
@@ -291,12 +295,19 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
         }
     }
 
-    private static void NormalizeArguments(KernelArguments args)
+    private static void NormalizeArguments(KernelArguments args, KernelFunctionMetadata metadata)
     {
+        var expectedTypes = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var p in metadata.Parameters)
+        {
+            expectedTypes[p.Name] = GetSchemaType(p);
+        }
+
         foreach (var key in args.Names.ToList())
         {
             var v = args[key];
-            var coerced = CoerceValue(v);
+            expectedTypes.TryGetValue(key, out var expectedType);
+            var coerced = CoerceValue(v, expectedType);
             if (!ReferenceEquals(v, coerced))
             {
                 args[key] = coerced;
@@ -304,27 +315,80 @@ internal sealed class ToolCallObserverFilter(Channel<ChatStreamEvent> channel) :
         }
     }
 
-    private static object? CoerceValue(object? value)
+    // Reads the JSON-schema "type" for a parameter from the MCP tool's inputSchema.
+    // The type may be a plain string ("number") or a nullable union (["number","null"]);
+    // in the union case we return the first non-null type.
+    private static string? GetSchemaType(KernelParameterMetadata p)
     {
-        switch (value)
+        var root = p.Schema?.RootElement;
+        if (root is not { ValueKind: JsonValueKind.Object } el) return null;
+        if (!el.TryGetProperty("type", out var t)) return null;
+
+        if (t.ValueKind == JsonValueKind.String) return t.GetString();
+        if (t.ValueKind == JsonValueKind.Array)
         {
-            case string s:
-                if (s == "True") return true;
-                if (s == "False") return false;
-                return s;
-            case JsonElement el:
-                return el.ValueKind switch
+            foreach (var item in t.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String && item.GetString() is { } s && s != "null")
                 {
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    JsonValueKind.Null => null,
-                    JsonValueKind.Number => el.TryGetInt64(out var i) ? i : el.GetDouble(),
-                    JsonValueKind.String => el.GetString(),
-                    _ => value
-                };
-            default:
-                return value;
+                    return s;
+                }
+            }
         }
+        return null;
+    }
+
+    private static object? CoerceValue(object? value, string? expectedType)
+    {
+        // Pull out the raw string when the argument arrived as a string (either a
+        // CLR string or a JSON string element). Anything else is left to the legacy
+        // JsonElement normalization below.
+        var str = value switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } el => el.GetString(),
+            _ => null
+        };
+
+        if (str is not null)
+        {
+            switch (expectedType)
+            {
+                case "object":
+                case "array":
+                    try { return JsonNode.Parse(str); }
+                    catch { return value; }
+                case "integer":
+                    return long.TryParse(str, NumberStyles.Any, CultureInfo.InvariantCulture, out var l)
+                        ? l : value;
+                case "number":
+                    return double.TryParse(str, NumberStyles.Any, CultureInfo.InvariantCulture, out var d)
+                        ? d : value;
+                case "boolean":
+                    return bool.TryParse(str, out var b) ? b : value;
+                default:
+                    // No usable schema hint — keep the old "True"/"False" heuristic.
+                    if (str == "True") return true;
+                    if (str == "False") return false;
+                    return str;
+            }
+        }
+
+        // Non-string JsonElement: unwrap to a CLR value so it serializes with the
+        // correct JSON type on the way to the MCP server.
+        if (value is JsonElement other)
+        {
+            return other.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                JsonValueKind.Number => other.TryGetInt64(out var i) ? i : other.GetDouble(),
+                _ => value
+            };
+        }
+
+        return value;
     }
 
     private static string SerializeArgs(KernelArguments args)
