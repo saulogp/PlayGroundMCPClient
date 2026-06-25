@@ -37,7 +37,9 @@ public sealed class ChatOrchestrator(
         var llm = llmStore.Current;
         if (!llm.IsConfigured)
         {
-            yield return new ErrorEvent("LLM nao configurada. Va em /settings e preencha Model + ApiKey.");
+            yield return new ErrorEvent(llm.Provider == LlmProvider.AzureOpenAI
+                ? "LLM nao configurada. Va em /settings e preencha Endpoint + Deployment + ApiKey (Azure OpenAI)."
+                : "LLM nao configurada. Va em /settings e preencha Model + ApiKey.");
             yield break;
         }
 
@@ -133,9 +135,20 @@ public sealed class ChatOrchestrator(
             new ToolCallObserverFilter(channel));
         builder.Services.AddSingleton(loggerFactory);
 
-        builder.AddOpenAIChatCompletion(
-            modelId: llm.Model,
-            apiKey: llm.ApiKey);
+        if (llm.Provider == LlmProvider.AzureOpenAI)
+        {
+            builder.AddAzureOpenAIChatCompletion(
+                deploymentName: llm.Model,
+                endpoint: llm.Endpoint,
+                apiKey: llm.ApiKey,
+                apiVersion: string.IsNullOrWhiteSpace(llm.ApiVersion) ? null : llm.ApiVersion);
+        }
+        else
+        {
+            builder.AddOpenAIChatCompletion(
+                modelId: llm.Model,
+                apiKey: llm.ApiKey);
+        }
 
         var kernel = builder.Build();
 

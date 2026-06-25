@@ -7,19 +7,40 @@
 
 <PageTitle>Settings - Playground MCP</PageTitle>
 
-<MudText Typo="Typo.h5" Class="mb-3">LLM (OpenAI)</MudText>
+<MudText Typo="Typo.h5" Class="mb-3">LLM</MudText>
 
 <MudPaper Class="pa-4" Outlined="true" Style="max-width: 720px;">
     <MudStack Spacing="3">
+        <MudSelect @bind-Value="_provider"
+                   Label="Provedor"
+                   Variant="Variant.Outlined">
+            <MudSelectItem Value="LlmProvider.OpenAI">OpenAI (api.openai.com)</MudSelectItem>
+            <MudSelectItem Value="LlmProvider.AzureOpenAI">Azure OpenAI</MudSelectItem>
+        </MudSelect>
+
+        @if (_provider == LlmProvider.AzureOpenAI)
+        {
+            <MudTextField @bind-Value="_endpoint"
+                          Label="Endpoint"
+                          HelperText="Ex.: https://seu-recurso.openai.azure.com/"
+                          Variant="Variant.Outlined"
+                          Required="true" />
+
+            <MudTextField @bind-Value="_apiVersion"
+                          Label="API Version"
+                          HelperText="Ex.: 2024-10-21 (vazio = padrao do SDK)"
+                          Variant="Variant.Outlined" />
+        }
+
         <MudTextField @bind-Value="_model"
-                      Label="Model"
-                      HelperText="Ex.: gpt-4o, gpt-4o-mini, gpt-4.1"
+                      Label="@(_provider == LlmProvider.AzureOpenAI ? "Deployment" : "Model")"
+                      HelperText="@(_provider == LlmProvider.AzureOpenAI ? "Nome do deployment no Azure" : "Ex.: gpt-4o, gpt-4o-mini, gpt-4.1")"
                       Variant="Variant.Outlined"
                       Required="true" />
 
         <MudTextField @bind-Value="_apiKey"
                       Label="API Key"
-                      HelperText="Sua key da OpenAI (sk-...)"
+                      HelperText="@(_provider == LlmProvider.AzureOpenAI ? "Key do recurso Azure OpenAI" : "Sua key da OpenAI (sk-...)")"
                       InputType="@(_showKey ? InputType.Text : InputType.Password)"
                       Variant="Variant.Outlined"
                       Adornment="Adornment.End"
@@ -49,14 +70,18 @@
         <MudAlert Severity="Severity.Info" Dense="true">
             Os valores ficam em <code>llm.user.json</code> (gitignored).
             Voce tambem pode definir via <code>appsettings.json</code> (secao <code>Llm</code>)
-            ou variaveis de ambiente <code>Llm__Model</code> / <code>Llm__ApiKey</code>.
+            ou variaveis de ambiente <code>Llm__Provider</code> / <code>Llm__Model</code> /
+            <code>Llm__ApiKey</code> / <code>Llm__Endpoint</code> / <code>Llm__ApiVersion</code>.
         </MudAlert>
     </MudStack>
 </MudPaper>
 
 @code {
+    private LlmProvider _provider = LlmProvider.OpenAI;
     private string _model = "";
     private string _apiKey = "";
+    private string _endpoint = "";
+    private string _apiVersion = "";
     private bool _showKey;
     private bool _testing;
     private string? _status;
@@ -65,25 +90,36 @@
     protected override void OnInitialized()
     {
         var c = Store.Current;
+        _provider = c.Provider;
         _model = c.Model;
         _apiKey = c.ApiKey;
+        _endpoint = c.Endpoint;
+        _apiVersion = c.ApiVersion;
     }
+
+    private LlmOptions BuildOptions() => new()
+    {
+        Provider = _provider,
+        Model = _model.Trim(),
+        ApiKey = _apiKey.Trim(),
+        Endpoint = _endpoint.Trim(),
+        ApiVersion = _apiVersion.Trim()
+    };
 
     private void Save()
     {
-        Store.Update(new LlmOptions
-        {
-            Model = _model.Trim(),
-            ApiKey = _apiKey.Trim()
-        });
+        Store.Update(BuildOptions());
         Snackbar.Add("Configuracao salva", Severity.Success);
     }
 
     private async Task TestConnection()
     {
-        if (string.IsNullOrWhiteSpace(_model) || string.IsNullOrWhiteSpace(_apiKey))
+        var opts = BuildOptions();
+        if (!opts.IsConfigured)
         {
-            _status = "Preencha model e key";
+            _status = _provider == LlmProvider.AzureOpenAI
+                ? "Preencha endpoint, deployment e key"
+                : "Preencha model e key";
             _statusOk = false;
             return;
         }
@@ -95,7 +131,18 @@
         try
         {
             var builder = Kernel.CreateBuilder();
-            builder.AddOpenAIChatCompletion(_model.Trim(), _apiKey.Trim());
+            if (opts.Provider == LlmProvider.AzureOpenAI)
+            {
+                builder.AddAzureOpenAIChatCompletion(
+                    deploymentName: opts.Model,
+                    endpoint: opts.Endpoint,
+                    apiKey: opts.ApiKey,
+                    apiVersion: string.IsNullOrWhiteSpace(opts.ApiVersion) ? null : opts.ApiVersion);
+            }
+            else
+            {
+                builder.AddOpenAIChatCompletion(opts.Model, opts.ApiKey);
+            }
             var kernel = builder.Build();
             var chat = kernel.GetRequiredService<IChatCompletionService>();
             var history = new ChatHistory();

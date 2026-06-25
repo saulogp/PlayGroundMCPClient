@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using PlayGroundMCPClient.Web.Models;
 
@@ -57,13 +58,17 @@ public sealed class LlmStore
 
     private static LlmOptions Clone(LlmOptions src) => new()
     {
+        Provider = src.Provider,
         Model = src.Model,
-        ApiKey = src.ApiKey
+        ApiKey = src.ApiKey,
+        Endpoint = src.Endpoint,
+        ApiVersion = src.ApiVersion
     };
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter() }
     };
 }
